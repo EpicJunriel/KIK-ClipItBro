@@ -1957,6 +1957,9 @@ class MainWindow(QMainWindow):
                     self.text_edit.add_log(f"目標サイズ: {target_size} MB | 誤差: {size_diff:.2f} MB | 精度: {accuracy:.1f}%")
             except:
                 pass
+            
+            # 変換完了時にアプリをアクティブにしてタスクバーを点滅
+            self.activate_window_on_completion()
                 
             # 変換完了ポップアップを表示
             self.show_completion_dialog(output_path)
@@ -1964,6 +1967,9 @@ class MainWindow(QMainWindow):
             self.text_edit.add_log("=== 変換失敗 ===")
             if error_message:
                 self.text_edit.add_log(f"エラー: {error_message}")
+            
+            # エラー時もアプリをアクティブに
+            self.activate_window_on_completion()
                 
             # エラーポップアップを表示
             error_box = QMessageBox(self)
@@ -2279,6 +2285,90 @@ class MainWindow(QMainWindow):
     def get_selected_video_file(self):
         """現在選択されている動画ファイルのパスを取得"""
         return self.text_edit.video_file_path
+
+    def activate_window_on_completion(self):
+        """変換完了時にアプリをアクティブにしてタスクバーを点滅"""
+        try:
+            import platform
+            
+            if platform.system() == "Windows":
+                # Windows APIを使用してタスクバー点滅とウィンドウアクティブ化
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    
+                    # ウィンドウハンドルを取得
+                    hwnd = int(self.winId())
+                    self.text_edit.add_log(f"ウィンドウハンドル: {hwnd}")
+                    
+                    # Windows API定義
+                    user32 = ctypes.windll.user32
+                    
+                    # FLASHWINFO構造体定義
+                    class FLASHWINFO(ctypes.Structure):
+                        _fields_ = [
+                            ("cbSize", wintypes.UINT),
+                            ("hwnd", wintypes.HWND),
+                            ("dwFlags", wintypes.DWORD),
+                            ("uCount", wintypes.UINT),
+                            ("dwTimeout", wintypes.DWORD)
+                        ]
+                    
+                    # フラッシュ設定定数
+                    FLASHW_STOP = 0x0
+                    FLASHW_CAPTION = 0x1    # タイトルバーを点滅
+                    FLASHW_TRAY = 0x2       # タスクバーを点滅
+                    FLASHW_ALL = FLASHW_CAPTION | FLASHW_TRAY  # 両方点滅
+                    FLASHW_TIMER = 0x4      # 継続的に点滅
+                    FLASHW_TIMERNOFG = 0x12 # フォアグラウンドになるまで点滅
+                    
+                    # FLASHWINFO設定
+                    flash_info = FLASHWINFO()
+                    flash_info.cbSize = ctypes.sizeof(FLASHWINFO)
+                    flash_info.hwnd = hwnd
+                    flash_info.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG
+                    flash_info.uCount = 3  # 3回点滅
+                    flash_info.dwTimeout = 0  # デフォルトタイミング
+                    
+                    # タスクバー点滅実行
+                    result = user32.FlashWindowEx(ctypes.byref(flash_info))
+                    self.text_edit.add_log(f"タスクバー点滅実行: {result}")
+                    
+                    # ウィンドウを前面に持ってくる
+                    user32.SetForegroundWindow(hwnd)
+                    self.text_edit.add_log("ウィンドウを前面に移動")
+                    
+                    # アクティブ化
+                    user32.SetActiveWindow(hwnd)
+                    self.text_edit.add_log("ウィンドウをアクティブ化")
+                    
+                    # Qtのウィンドウアクティブ化も実行
+                    self.raise_()
+                    self.activateWindow()
+                    self.text_edit.add_log("Qt ウィンドウアクティブ化完了")
+                    
+                except Exception as e:
+                    self.text_edit.add_log(f"Windows API実行エラー: {e}")
+                    # フォールバック: Qtの標準機能のみ使用
+                    self.raise_()
+                    self.activateWindow()
+                    self.text_edit.add_log("フォールバック: Qt標準アクティブ化")
+                    
+            else:
+                # Windows以外のプラットフォーム
+                self.raise_()
+                self.activateWindow()
+                self.text_edit.add_log("非Windows環境: Qt標準アクティブ化")
+                
+        except Exception as e:
+            self.text_edit.add_log(f"ウィンドウアクティブ化エラー: {e}")
+            # 最終フォールバック
+            try:
+                self.raise_()
+                self.activateWindow()
+                self.text_edit.add_log("最終フォールバック: 基本アクティブ化")
+            except Exception as e2:
+                self.text_edit.add_log(f"最終フォールバックもエラー: {e2}")
 
     def create_menu_bar(self):
         """メニューバーを作成"""
