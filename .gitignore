@@ -181,3 +181,8 @@ cython_debug/
 .cursorindexingignore
 /bin
 /icon
+build_exe.bat
+EXE配布手順書.md
+配布用README.txt
+build_exe.ps1
+create_release.bat

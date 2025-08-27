@@ -446,8 +446,23 @@ class DragDropTextEdit(QTextEdit):
             if os.name == 'nt':  # Windows環境の場合
                 env['LANG'] = 'ja_JP.UTF-8'
             
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True, 
-                                   encoding='utf-8', errors='replace', env=env)
+            # Windowsでコマンドプロンプトウィンドウを表示しないための設定
+            kwargs = {
+                'capture_output': True, 
+                'text': True, 
+                'check': True,
+                'encoding': 'utf-8', 
+                'errors': 'replace', 
+                'env': env
+            }
+            if os.name == 'nt':  # Windows環境の場合
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                kwargs['startupinfo'] = startupinfo
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
+            result = subprocess.run(cmd, **kwargs)
             
             # デバッグ用：コマンドと出力を記録
             self.add_log(f"FFprobe実行: {' '.join(cmd[:3])} ... {os.path.basename(normalized_path)}")
@@ -1073,6 +1088,16 @@ class MainWindow(QMainWindow):
         self.show_ffmpeg_version()
 
     def set_application_icon(self):
+        # EXE環境でのリソースパス取得
+        def get_resource_path(relative_path):
+            """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstallerでパッケージ化された環境
+                return os.path.join(sys._MEIPASS, relative_path)
+            else:
+                # 通常のPythonスクリプト環境
+                return relative_path
+        
         # カスタムアイコンファイルを検索（複数の形式をサポート）
         icon_extensions = ['.ico', '.png', '.jpg', '.jpeg', '.bmp', '.gif']
         custom_icon_path = None
@@ -1080,32 +1105,61 @@ class MainWindow(QMainWindow):
         # app.icoを優先的に検索（Windowsの標準）
         priority_paths = ['icon/app.ico', 'app.ico']
         for path in priority_paths:
-            if os.path.exists(path):
-                custom_icon_path = path
+            resource_path = get_resource_path(path)
+            if os.path.exists(resource_path):
+                custom_icon_path = resource_path
                 break
         
         # .icoが見つからない場合は他の形式を検索
         if not custom_icon_path:
             for ext in icon_extensions[1:]:  # .ico以外
                 potential_path = f"icon/app{ext}"
-                if os.path.exists(potential_path):
-                    custom_icon_path = potential_path
+                resource_path = get_resource_path(potential_path)
+                if os.path.exists(resource_path):
+                    custom_icon_path = resource_path
                     break
         
         if custom_icon_path:
             try:
                 # カスタムアイコンを設定
                 app_icon = QIcon(custom_icon_path)
+                
+                # ウィンドウアイコンを設定
                 self.setWindowIcon(app_icon)
                 
                 # アプリケーション全体のアイコンも設定
                 QApplication.instance().setWindowIcon(app_icon)
                 
-                self.text_edit.add_log(f"アプリケーションアイコンを設定しました: {custom_icon_path}")
+                # タスクバーアイコンを確実に設定（Windows固有）
+                if sys.platform == "win32":
+                    try:
+                        import ctypes
+                        # アプリケーションユーザーモデルIDを設定してタスクバーアイコンを独立させる
+                        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClipItBro.菊池組.動画変換")
+                    except Exception as e:
+                        self.text_edit.add_log(f"タスクバーアイコン設定警告: {e}")
+                
+                self.text_edit.add_log(f"アプリケーションアイコンを設定しました: {os.path.basename(custom_icon_path)}")
             except Exception as e:
                 self.text_edit.add_log(f"アプリケーションアイコン設定エラー: {e}")
+                # フォールバック：デフォルトアイコンを設定
+                self.set_default_icon()
         else:
             self.text_edit.add_log("カスタムアプリケーションアイコンが見つかりません")
+            # フォールバック：デフォルトアイコンを設定
+            self.set_default_icon()
+    
+    def set_default_icon(self):
+        """デフォルトアイコンを設定"""
+        try:
+            # PyQt5の標準アイコンを使用
+            style = self.style()
+            default_icon = style.standardIcon(style.SP_ComputerIcon)
+            self.setWindowIcon(default_icon)
+            QApplication.instance().setWindowIcon(default_icon)
+            self.text_edit.add_log("デフォルトアイコンを設定しました")
+        except Exception as e:
+            self.text_edit.add_log(f"デフォルトアイコン設定エラー: {e}")
 
     def stop_all_running_processes(self):
         """実行中の全プロセスを停止"""
@@ -1566,7 +1620,16 @@ class MainWindow(QMainWindow):
         
         # FFmpegのチェック
         try:
-            result = subprocess.run([ffmpeg_path, '-version'], capture_output=True, text=True, check=True)
+            # Windowsでコマンドプロンプトウィンドウを表示しないための設定
+            kwargs = {'capture_output': True, 'text': True, 'check': True}
+            if os.name == 'nt':  # Windows環境の場合
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                kwargs['startupinfo'] = startupinfo
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
+            result = subprocess.run([ffmpeg_path, '-version'], **kwargs)
             first_line = result.stdout.splitlines()[0] if result.stdout else ''
             self.text_edit.add_log("FFmpegが正常に検出されました")
             self.text_edit.add_log(f"FFmpeg: {first_line}")
@@ -1585,7 +1648,16 @@ class MainWindow(QMainWindow):
         
         # FFprobeのチェック
         try:
-            result = subprocess.run([ffprobe_path, '-version'], capture_output=True, text=True, check=True)
+            # Windowsでコマンドプロンプトウィンドウを表示しないための設定
+            kwargs = {'capture_output': True, 'text': True, 'check': True}
+            if os.name == 'nt':  # Windows環境の場合
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                kwargs['startupinfo'] = startupinfo
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
+            result = subprocess.run([ffprobe_path, '-version'], **kwargs)
             first_line = result.stdout.splitlines()[0] if result.stdout else ''
             self.text_edit.add_log("FFprobeが正常に検出されました")
             self.text_edit.add_log(f"FFprobe: {first_line}")
@@ -1974,14 +2046,41 @@ class MainWindow(QMainWindow):
         msg_box.setStyleSheet(msg_box_style)
         
         # ダイアログを表示
-        msg_box.exec_()
+        result = msg_box.exec_()
         
         # クリックされたボタンを確認
-        if msg_box.clickedButton() == folder_button:
-            self.open_output_folder(output_path)
+        clicked_button = msg_box.clickedButton()
+        if clicked_button == folder_button:
+            self.text_edit.add_log("フォルダを開くボタンがクリックされました")
+            self.text_edit.add_log(f"対象ファイル: {output_path}")
+            
+            # ファイルの存在確認
+            if os.path.exists(output_path):
+                self.text_edit.add_log("出力ファイルの存在を確認しました")
+                self.open_output_folder(output_path)
+            else:
+                self.text_edit.add_log(f"⚠ 出力ファイルが見つかりません: {output_path}")
+                # フォルダのみ開く試行
+                folder_path = os.path.dirname(output_path)
+                if os.path.exists(folder_path):
+                    self.text_edit.add_log(f"フォルダのみ開きます: {folder_path}")
+                    self.open_output_folder(folder_path)
+                else:
+                    self.text_edit.add_log(f"⚠ フォルダも見つかりません: {folder_path}")
+        else:
+            self.text_edit.add_log("OKボタンがクリックされました")
 
     def get_random_completion_icon(self):
-        """ランダムな変換完了アイコンを取得"""
+        """ランダムな変換完了アイコンを取得（EXE対応）"""
+        def get_resource_path(relative_path):
+            """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstallerでパッケージ化された環境
+                return os.path.join(sys._MEIPASS, relative_path)
+            else:
+                # 通常のPythonスクリプト環境
+                return relative_path
+        
         # サポートされる画像形式
         image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.gif', '*.svg']
         
@@ -1996,9 +2095,10 @@ class MainWindow(QMainWindow):
         
         # 各フォルダから画像ファイルを収集
         for folder in search_folders:
-            if os.path.exists(folder):
+            resource_folder = get_resource_path(folder)
+            if os.path.exists(resource_folder):
                 for extension in image_extensions:
-                    pattern = os.path.join(folder, extension)
+                    pattern = os.path.join(resource_folder, extension)
                     images = glob.glob(pattern)
                     all_images.extend(images)
         
@@ -2019,40 +2119,162 @@ class MainWindow(QMainWindow):
         # フォールバック：元の方法で単一ファイルを検索
         for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.svg']:
             potential_path = f"icon/success{ext}"
-            if os.path.exists(potential_path):
-                return potential_path
+            resource_path = get_resource_path(potential_path)
+            if os.path.exists(resource_path):
+                return resource_path
         
         return None
 
     def open_output_folder(self, file_path):
-        """出力ファイルのフォルダを開く"""
+        """出力ファイルのフォルダを開く（EXE対応完全版）"""
         try:
             import subprocess
             import platform
             
+            # ファイルパスの存在確認
+            if not file_path or not os.path.exists(file_path):
+                self.text_edit.add_log(f"エラー: ファイルが存在しません: {file_path}")
+                return
+            
             folder_path = os.path.dirname(file_path)
+            abs_file_path = os.path.abspath(file_path)
+            abs_folder_path = os.path.abspath(folder_path)
+            
+            self.text_edit.add_log(f"フォルダオープン試行: {abs_folder_path}")
+            self.text_edit.add_log(f"ターゲットファイル: {abs_file_path}")
             
             if platform.system() == "Windows":
-                # Windowsの場合、エクスプローラーでファイルを選択状態で開く
-                subprocess.run(['explorer', '/select,', os.path.normpath(file_path)])
-                self.text_edit.add_log(f"フォルダを開きました: {folder_path}")
-            elif platform.system() == "Darwin":  # macOS
-                subprocess.run(['open', '-R', file_path])
-                self.text_edit.add_log(f"Finderでフォルダを開きました: {folder_path}")
-            else:  # Linux
-                subprocess.run(['xdg-open', folder_path])
-                self.text_edit.add_log(f"フォルダを開きました: {folder_path}")
+                # 方法1: Windows API (ShellExecute) を使用
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    
+                    # ShellExecuteWの定義
+                    shell32 = ctypes.windll.shell32
+                    
+                    # ファイルを選択してエクスプローラーを開く
+                    self.text_edit.add_log("Windows API (ShellExecute)でファイル選択を試行")
+                    result = shell32.ShellExecuteW(
+                        None,                    # hwnd
+                        "open",                  # verb
+                        "explorer.exe",          # file
+                        f'/select,"{abs_file_path}"',  # parameters
+                        None,                    # directory
+                        1                        # SW_SHOWNORMAL
+                    )
+                    
+                    if result > 32:  # 成功
+                        self.text_edit.add_log(f"✓ Windows API でファイル選択成功: {abs_file_path}")
+                        return
+                    else:
+                        self.text_edit.add_log(f"Windows API実行失敗 (code: {result})")
+                        
+                except Exception as e:
+                    self.text_edit.add_log(f"Windows API実行エラー: {e}")
                 
+                # 方法2: subprocess.Popen（非同期実行）
+                try:
+                    self.text_edit.add_log("フォールバック1: subprocess.Popenでファイル選択を試行")
+                    
+                    # 正規化されたパスを使用
+                    normalized_path = os.path.normpath(abs_file_path)
+                    cmd = ['explorer', '/select,', f'"{normalized_path}"']
+                    
+                    self.text_edit.add_log(f"実行コマンド: {' '.join(cmd)}")
+                    
+                    # Popenで非同期実行
+                    process = subprocess.Popen(
+                        cmd,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    
+                    # プロセスが正常に開始されたかチェック
+                    import time
+                    time.sleep(0.5)  # 少し待機
+                    
+                    if process.poll() is None or process.returncode == 0:
+                        self.text_edit.add_log(f"✓ subprocess.Popenでファイル選択成功: {abs_file_path}")
+                        return
+                    else:
+                        self.text_edit.add_log(f"subprocess.Popen実行失敗 (code: {process.returncode})")
+                        
+                except Exception as e:
+                    self.text_edit.add_log(f"subprocess.Popen実行エラー: {e}")
+                
+                # 方法3: Windows API でフォルダのみ開く
+                try:
+                    import ctypes
+                    
+                    self.text_edit.add_log("フォールバック2: Windows APIでフォルダオープンを試行")
+                    shell32 = ctypes.windll.shell32
+                    
+                    result = shell32.ShellExecuteW(
+                        None,                    # hwnd
+                        "open",                  # verb
+                        abs_folder_path,         # file (フォルダパス)
+                        None,                    # parameters
+                        None,                    # directory
+                        1                        # SW_SHOWNORMAL
+                    )
+                    
+                    if result > 32:  # 成功
+                        self.text_edit.add_log(f"✓ Windows API でフォルダオープン成功: {abs_folder_path}")
+                        return
+                    else:
+                        self.text_edit.add_log(f"Windows API フォルダオープン失敗 (code: {result})")
+                        
+                except Exception as e:
+                    self.text_edit.add_log(f"Windows API フォルダオープンエラー: {e}")
+                
+                # 方法4: subprocess.Popenでフォルダのみ開く
+                try:
+                    self.text_edit.add_log("フォールバック3: subprocess.Popenでフォルダオープンを試行")
+                    
+                    cmd = ['explorer', abs_folder_path]
+                    process = subprocess.Popen(
+                        cmd,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    
+                    import time
+                    time.sleep(0.5)
+                    
+                    if process.poll() is None or process.returncode == 0:
+                        self.text_edit.add_log(f"✓ subprocess.Popenでフォルダオープン成功: {abs_folder_path}")
+                        return
+                    else:
+                        self.text_edit.add_log(f"subprocess.Popen フォルダオープン失敗 (code: {process.returncode})")
+                        
+                except Exception as e:
+                    self.text_edit.add_log(f"subprocess.Popen フォルダオープンエラー: {e}")
+                    
+            elif platform.system() == "Darwin":  # macOS
+                try:
+                    subprocess.run(['open', '-R', abs_file_path], check=True)
+                    self.text_edit.add_log(f"✓ Finderでフォルダを開きました: {abs_folder_path}")
+                    return
+                except Exception as e:
+                    self.text_edit.add_log(f"macOS open実行エラー: {e}")
+                    
+            else:  # Linux
+                try:
+                    subprocess.run(['xdg-open', abs_folder_path], check=True)
+                    self.text_edit.add_log(f"✓ フォルダを開きました: {abs_folder_path}")
+                    return
+                except Exception as e:
+                    self.text_edit.add_log(f"Linux xdg-open実行エラー: {e}")
+            
+            # 全ての方法が失敗した場合
+            self.text_edit.add_log("⚠ 全ての方法でフォルダオープンに失敗しました")
+            
         except Exception as e:
-            self.text_edit.add_log(f"フォルダオープンエラー: {e}")
-            # エラーの場合は通常のフォルダオープンを試行
-            try:
-                if platform.system() == "Windows":
-                    os.startfile(folder_path)
-                else:
-                    subprocess.run(['open' if platform.system() == "Darwin" else 'xdg-open', folder_path])
-            except:
-                self.text_edit.add_log("フォルダを開くことができませんでした")
+            self.text_edit.add_log(f"フォルダオープン処理で予期しないエラー: {e}")
+            import traceback
+            self.text_edit.add_log(f"詳細エラー: {traceback.format_exc()}")
 
     def get_selected_video_file(self):
         """現在選択されている動画ファイルのパスを取得"""
@@ -2198,6 +2420,13 @@ class ConversionThread(QThread):
             # FFmpegをリアルタイム監視で実行
             import re
             
+            # Windowsでコマンドプロンプトウィンドウを表示しないための設定
+            startupinfo = None
+            if os.name == 'nt':  # Windows環境の場合
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             process = subprocess.Popen(
                 self.cmd,
                 stdout=subprocess.PIPE,
@@ -2206,7 +2435,9 @@ class ConversionThread(QThread):
                 env=self.env,
                 encoding='utf-8',
                 errors='replace',
-                universal_newlines=True
+                universal_newlines=True,
+                startupinfo=startupinfo,  # ウィンドウ非表示設定を追加
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0  # 追加の非表示フラグ
             )
             
             current_time = 0
@@ -2306,6 +2537,14 @@ class FirstPassThread(QThread):
             
             # 1pass目を実行
             import re
+            
+            # Windowsでコマンドプロンプトウィンドウを表示しないための設定
+            startupinfo = None
+            if os.name == 'nt':  # Windows環境の場合
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -2314,7 +2553,9 @@ class FirstPassThread(QThread):
                 env=env,
                 encoding='utf-8',
                 errors='replace',
-                universal_newlines=True
+                universal_newlines=True,
+                startupinfo=startupinfo,  # ウィンドウ非表示設定を追加
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0  # 追加の非表示フラグ
             )
             
             # 出力を監視してプログレスを解析
@@ -2455,6 +2696,13 @@ class TwoPassConversionThread(QThread):
         try:
             import re
             
+            # Windowsでコマンドプロンプトウィンドウを表示しないための設定
+            startupinfo = None
+            if os.name == 'nt':  # Windows環境の場合
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -2463,7 +2711,9 @@ class TwoPassConversionThread(QThread):
                 env=self.env,
                 encoding='utf-8',
                 errors='replace',
-                universal_newlines=True
+                universal_newlines=True,
+                startupinfo=startupinfo,  # ウィンドウ非表示設定を追加
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0  # 追加の非表示フラグ
             )
             
             current_time = 0
@@ -2726,24 +2976,89 @@ class AboutDialog(QDialog):
         self.setStyleSheet(dialog_style)
     
     def get_app_icon(self):
-        """アプリケーションアイコンを取得"""
+        """アプリケーションアイコンを取得（EXE対応）"""
+        def get_resource_path(relative_path):
+            """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstallerでパッケージ化された環境
+                return os.path.join(sys._MEIPASS, relative_path)
+            else:
+                # 通常のPythonスクリプト環境
+                return relative_path
+        
         icon_paths = ["icon/app.ico", "icon/app.png", "app.ico", "app.png"]
         for path in icon_paths:
-            if os.path.exists(path):
-                return QIcon(path)
-        return QIcon()
+            resource_path = get_resource_path(path)
+            if os.path.exists(resource_path):
+                return QIcon(resource_path)
+        
+        # フォールバック：標準アイコン
+        try:
+            style = self.style()
+            return style.standardIcon(style.SP_ComputerIcon)
+        except:
+            return QIcon()
     
     def get_logo_image(self):
-        """制作者ロゴ画像を取得（GIF対応）"""
+        """制作者ロゴ画像を取得（GIF対応・EXE対応）"""
+        def get_resource_path(relative_path):
+            """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstallerでパッケージ化された環境
+                return os.path.join(sys._MEIPASS, relative_path)
+            else:
+                # 通常のPythonスクリプト環境
+                return relative_path
+        
         logo_paths = ["icon/logo.gif", "icon/logo.png", "icon/logo.jpg", "icon/logo.ico", 
                      "logo.gif", "logo.png", "logo.jpg", "logo.ico"]
         for path in logo_paths:
-            if os.path.exists(path):
-                return path  # ファイルパスを返す（GIFとPNG/JPGの両方に対応）
+            resource_path = get_resource_path(path)
+            if os.path.exists(resource_path):
+                return resource_path  # ファイルパスを返す（GIFとPNG/JPGの両方に対応）
         return None
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    
+    # EXE環境でのリソースパス取得
+    def get_resource_path(relative_path):
+        """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+        if hasattr(sys, '_MEIPASS'):
+            # PyInstallerでパッケージ化された環境
+            return os.path.join(sys._MEIPASS, relative_path)
+        else:
+            # 通常のPythonスクリプト環境
+            return relative_path
+    
+    # アプリケーション全体のアイコンを早期設定
+    icon_paths = ["icon/app.ico", "icon/app.png", "app.ico", "app.png"]
+    app_icon_set = False
+    
+    for path in icon_paths:
+        resource_path = get_resource_path(path)
+        if os.path.exists(resource_path):
+            try:
+                app_icon = QIcon(resource_path)
+                app.setWindowIcon(app_icon)
+                app_icon_set = True
+                print(f"アプリケーションアイコンを設定: {os.path.basename(resource_path)}")
+                break
+            except Exception as e:
+                print(f"アイコン設定エラー: {e}")
+    
+    if not app_icon_set:
+        print("カスタムアイコンが見つかりません。デフォルトアイコンを使用します。")
+    
+    # Windows固有の設定
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            # アプリケーションユーザーモデルIDを設定
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClipItBro.菊池組.動画変換.v2.0")
+        except Exception as e:
+            print(f"Windows固有設定エラー: {e}")
+    
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
