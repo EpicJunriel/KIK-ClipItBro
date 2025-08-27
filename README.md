@@ -1,3 +1,4 @@
+!["ClipItBro_LOGO"]("about/kik_clipitbro_logo.png")
 ClipItBro - 高精度動画変換ツール
 ====================================
 
