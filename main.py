@@ -1160,7 +1160,7 @@ class MainWindow(QMainWindow):
         param_layout.addLayout(param_input_layout)
 
         # 情報表示ラベル
-        self.info_label = QLabel('目標ファイルサイズ: 50 MB | 推定ビットレート: 動画を選択してください', self)
+        self.info_label = QLabel('目標ファイルサイズ: 9 MB | 推定ビットレート: 動画を選択してください', self)
         self.info_label.setObjectName("size_estimation")
         param_layout.addWidget(self.info_label)
 
@@ -1958,11 +1958,6 @@ class MainWindow(QMainWindow):
         # FFmpegコマンド構築（2pass目）
         ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
         
-        # ログファイル名を取得
-        video_dir = os.path.dirname(video_file)
-        video_name = os.path.splitext(os.path.basename(video_file))[0]
-        log_file = os.path.join(video_dir, f"ffmpeg2pass-{video_name}")
-        
         cmd = [
             ffmpeg_path,
             '-y',  # ファイル上書き許可
@@ -1970,7 +1965,6 @@ class MainWindow(QMainWindow):
             '-c:v', 'libx264',
             '-b:v', f'{target_bitrate}k',
             '-pass', '2',
-            '-passlogfile', log_file,
             '-c:a', 'aac',
             '-b:a', '128k',
             output_path
@@ -2163,13 +2157,7 @@ class MainWindow(QMainWindow):
             self.activate_window_on_completion()
                 
             # エラーポップアップを表示
-            error_box = QMessageBox(self)
-            error_box.setIcon(QMessageBox.Critical)
-            error_box.setWindowTitle("変換エラー")
-            error_box.setText("動画変換に失敗しました")
-            error_box.setDetailedText(error_message if error_message else "不明なエラーが発生しました")
-            error_box.setStandardButtons(QMessageBox.Ok)
-            error_box.exec_()
+            self.show_error_dialog(error_message)
 
     def show_completion_dialog(self, output_path):
         """変換完了ダイアログを表示"""
@@ -2267,6 +2255,70 @@ class MainWindow(QMainWindow):
         else:
             self.text_edit.add_log("OKボタンがクリックされました")
 
+    def show_error_dialog(self, error_message):
+        """変換エラーダイアログを表示"""
+        msg_box = QMessageBox(self)
+        
+        # ランダムエラー画像選択機能
+        custom_icon_path = self.get_random_error_icon()
+        
+        if custom_icon_path:
+            try:
+                pixmap = QPixmap(custom_icon_path)
+                # アイコンサイズを調整（64x64ピクセル）
+                scaled_pixmap = pixmap.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                msg_box.setIconPixmap(scaled_pixmap)
+                self.text_edit.add_log(f"ランダムエラーアイコンを表示: {os.path.basename(custom_icon_path)}")
+            except Exception as e:
+                msg_box.setIcon(QMessageBox.Critical)
+                self.text_edit.add_log(f"ランダムエラーアイコン読み込みエラー: {e}")
+        else:
+            # カスタムアイコンが見つからない場合はデフォルトアイコン
+            msg_box.setIcon(QMessageBox.Critical)
+            self.text_edit.add_log("ランダムエラー表示用の画像が見つかりません。デフォルトアイコンを使用します")
+        
+        msg_box.setWindowTitle("変換エラー")
+        msg_box.setText("動画変換に失敗しました")
+        msg_box.setDetailedText(error_message if error_message else "不明なエラーが発生しました")
+        
+        # OKボタンを追加
+        ok_button = msg_box.addButton("OK", QMessageBox.AcceptRole)
+        
+        # ボタンにテーマスタイルを適用
+        ThemeManager.apply_theme_to_widget(ok_button, self.current_theme)
+        
+        # QMessageBox全体にもテーマを適用
+        msg_box_style = f"""
+        QMessageBox {{
+            background-color: {self.current_theme['main_bg']};
+            color: {self.current_theme['text_color']};
+        }}
+        QMessageBox QLabel {{
+            color: {self.current_theme['text_color']};
+            background-color: transparent;
+        }}
+        QMessageBox QPushButton {{
+            background-color: {self.current_theme['button_bg']} !important;
+            color: {self.current_theme['button_text']} !important;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-weight: bold;
+            min-width: 80px;
+        }}
+        QMessageBox QPushButton:hover {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        QMessageBox QPushButton:pressed {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        """
+        msg_box.setStyleSheet(msg_box_style)
+        
+        # ダイアログを表示
+        result = msg_box.exec_()
+        self.text_edit.add_log("エラーダイアログを閉じました")
+
     def get_random_completion_icon(self):
         """ランダムな変換完了アイコンを取得（EXE対応）"""
         def get_resource_path(relative_path):
@@ -2319,6 +2371,83 @@ class MainWindow(QMainWindow):
             resource_path = get_resource_path(potential_path)
             if os.path.exists(resource_path):
                 return resource_path
+        
+        return None
+
+    def get_random_error_icon(self):
+        """ランダムなエラーアイコンを取得（EXE対応）"""
+        def get_resource_path(relative_path):
+            """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstallerでパッケージ化された環境
+                return os.path.join(sys._MEIPASS, relative_path)
+            else:
+                # 通常のPythonスクリプト環境
+                return relative_path
+        
+        # サポートされる画像形式
+        image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.gif', '*.svg']
+        
+        # 検索するフォルダパス（エラー用）
+        search_folders = [
+            'icon/error/',       # エラー専用フォルダ（優先）
+            'icon/fail/',        # 失敗フォルダ
+            'icon/warning/',     # 警告フォルダ
+            'icon/'              # メインフォルダ
+        ]
+        
+        all_images = []
+        
+        # 各フォルダから画像ファイルを収集
+        for folder in search_folders:
+            resource_folder = get_resource_path(folder)
+            if os.path.exists(resource_folder):
+                for extension in image_extensions:
+                    pattern = os.path.join(resource_folder, extension)
+                    images = glob.glob(pattern)
+                    all_images.extend(images)
+        
+        # 特定のファイル名を除外（アプリアイコンや成功アイコンなど）
+        excluded_names = [
+            'app.ico', 'app.png', 'app.jpg', 'app.jpeg',  # アプリアイコン
+            'success.png', 'success.jpg', 'success.jpeg', 'success.gif',  # 成功アイコン
+            'logo.png', 'logo.jpg', 'logo.gif'  # ロゴ
+        ]
+        
+        # エラー関連のキーワードでフィルタリング（優先選択）
+        error_keywords = ['error', 'fail', 'warning', 'alert', 'bug', 'crash', 'sad', 'no', 'x']
+        priority_images = []
+        other_images = []
+        
+        for image_path in all_images:
+            filename = os.path.basename(image_path).lower()
+            # 除外リストにあるファイルはスキップ
+            if filename in excluded_names:
+                continue
+                
+            # エラー関連キーワードを含むファイルを優先
+            if any(keyword in filename for keyword in error_keywords):
+                priority_images.append(image_path)
+            else:
+                other_images.append(image_path)
+        
+        # 優先画像がある場合はそこからランダム選択
+        if priority_images:
+            selected_image = random.choice(priority_images)
+            return selected_image
+        
+        # 優先画像がない場合は他の画像からランダム選択
+        if other_images:
+            selected_image = random.choice(other_images)
+            return selected_image
+        
+        # フォールバック：特定のエラーアイコンを検索
+        for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.svg']:
+            for error_name in ['error', 'fail', 'warning', 'alert']:
+                potential_path = f"icon/{error_name}{ext}"
+                resource_path = get_resource_path(potential_path)
+                if os.path.exists(resource_path):
+                    return resource_path
         
         return None
 
@@ -2793,10 +2922,6 @@ class FirstPassThread(QThread):
             ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
             
             # 1pass目用のログファイル名を生成
-            video_dir = os.path.dirname(self.video_file_path)
-            video_name = os.path.splitext(os.path.basename(self.video_file_path))[0]
-            log_file = os.path.join(video_dir, f"ffmpeg2pass-{video_name}")
-            
             # 1pass目のコマンド構築
             cmd = [
                 ffmpeg_path,
@@ -2805,7 +2930,6 @@ class FirstPassThread(QThread):
                 '-c:v', 'libx264',
                 '-b:v', f'{self.temp_bitrate}k',
                 '-pass', '1',
-                '-passlogfile', log_file,
                 '-f', 'null'
             ]
             
@@ -2887,7 +3011,7 @@ class FirstPassThread(QThread):
             if return_code == 0:
                 self.progress_signal.emit(100)  # 完了時は100%
                 self.log_signal.emit("1pass解析完了")
-                self.finished_signal.emit(True, log_file, "")
+                self.finished_signal.emit(True, "1pass_analysis_completed", "")
             else:
                 self.log_signal.emit(f"1pass解析失敗: 終了コード {return_code}")
                 self.finished_signal.emit(False, "", f"終了コード: {return_code}")
@@ -2921,11 +3045,6 @@ class TwoPassConversionThread(QThread):
         try:
             ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
             
-            # ログファイル名を生成
-            video_dir = os.path.dirname(self.video_file_path)
-            video_name = os.path.splitext(os.path.basename(self.video_file_path))[0]
-            log_file = os.path.join(video_dir, f"ffmpeg2pass-{video_name}")
-            
             if not self.second_pass_only:
                 # === 1pass目実行 ===
                 self.phase_signal.emit(1)
@@ -2938,7 +3057,6 @@ class TwoPassConversionThread(QThread):
                     '-c:v', 'libx264',
                     '-b:v', f'{self.target_bitrate}k',
                     '-pass', '1',
-                    '-passlogfile', log_file,
                     '-f', 'null'
                 ]
                 
@@ -2962,7 +3080,6 @@ class TwoPassConversionThread(QThread):
                 '-c:v', 'libx264',
                 '-b:v', f'{self.target_bitrate}k',
                 '-pass', '2',
-                '-passlogfile', log_file,
                 '-c:a', 'aac',
                 '-b:a', '128k',
                 self.output_path
