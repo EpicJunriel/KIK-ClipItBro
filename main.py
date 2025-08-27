@@ -12,6 +12,14 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QWidget, QVBox
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QMovie
 
+# Windows タスクバープログレス用のインポート（利用可能性をチェック）
+try:
+    from PyQt5.QtWinExtras import QWinTaskbarButton, QWinTaskbarProgress
+    TASKBAR_AVAILABLE = True
+except ImportError:
+    # WinExtrasが利用できない場合はctypesで代替実装
+    TASKBAR_AVAILABLE = False
+
 def set_titlebar_theme(window_handle, is_dark_mode):
     """
     タイトルバーのテーマを設定（Windows専用）
@@ -35,6 +43,149 @@ def set_titlebar_theme(window_handle, is_dark_mode):
             print(f"タイトルバーテーマ設定エラー: {e}")
             return False
     return False
+
+class TaskbarProgress:
+    """Windowsタスクバープログレスバー管理クラス"""
+    
+    def __init__(self, main_window=None):
+        self.main_window = main_window
+        self.taskbar_button = None
+        self.taskbar_progress = None
+        self.initialized = False
+        
+        # PyQt5 WinExtrasが利用可能かチェック
+        if TASKBAR_AVAILABLE and platform.system() == "Windows":
+            try:
+                self.taskbar_button = QWinTaskbarButton()
+                if main_window:
+                    self.taskbar_button.setWindow(main_window.windowHandle())
+                self.taskbar_progress = self.taskbar_button.progress()
+                self.initialized = True
+                print("タスクバープログレス初期化成功 (PyQt5 WinExtras)")
+                
+            except Exception as e:
+                print(f"PyQt5 WinExtras初期化エラー: {e}")
+                self.initialized = False
+        
+        # PyQt5 WinExtrasが利用できない場合のフォールバック
+        if not self.initialized and platform.system() == "Windows":
+            try:
+                # Windows API直接呼び出し準備
+                self.user32 = ctypes.windll.user32
+                self.shell32 = ctypes.windll.shell32
+                self.ole32 = ctypes.windll.ole32
+                self.hwnd = None
+                self.initialized = True
+                print("タスクバープログレス初期化成功 (ctypes fallback)")
+                
+            except Exception as e:
+                print(f"ctypes初期化エラー: {e}")
+                self.initialized = False
+        
+        if not self.initialized:
+            print("タスクバープログレス機能は利用できません")
+    
+    def set_window(self, main_window):
+        """メインウィンドウを設定"""
+        self.main_window = main_window
+        
+        if TASKBAR_AVAILABLE and self.taskbar_button and main_window:
+            try:
+                self.taskbar_button.setWindow(main_window.windowHandle())
+                self.initialized = True
+                print("タスクバープログレス ウィンドウ設定完了 (PyQt5)")
+            except Exception as e:
+                print(f"PyQt5 ウィンドウ設定エラー: {e}")
+        
+        # ctypes版の場合はウィンドウハンドルを取得
+        if not TASKBAR_AVAILABLE and main_window and self.initialized:
+            try:
+                self.hwnd = int(main_window.winId())
+                print(f"タスクバープログレス ウィンドウハンドル設定: {self.hwnd}")
+            except Exception as e:
+                print(f"ウィンドウハンドル取得エラー: {e}")
+    
+    def set_progress(self, value, maximum=100):
+        """プログレス値を設定 (0-maximum)"""
+        if not self.initialized:
+            return False
+        
+        # PyQt5 WinExtras版
+        if TASKBAR_AVAILABLE and self.taskbar_progress:
+            try:
+                self.taskbar_progress.setMaximum(maximum)
+                self.taskbar_progress.setValue(value)
+                self.taskbar_progress.setVisible(True)
+                return True
+            except Exception as e:
+                print(f"PyQt5タスクバープログレス設定エラー: {e}")
+                return False
+        
+        # ctypes版（フォールバック）
+        elif self.hwnd:
+            try:
+                # 簡単な進捗表示（Windows API直接呼び出し）
+                # 実際の実装は複雑なCOMインターフェースが必要なため、
+                # ここでは基本的な進捗状態のみ設定
+                progress_percent = (value * 100) // maximum
+                # ウィンドウタイトルに進捗を表示（簡易版）
+                if self.main_window:
+                    title = f"ClipItBro by 菊池組 - {progress_percent}%"
+                    self.main_window.setWindowTitle(title)
+                return True
+            except Exception as e:
+                print(f"ctypesタスクバープログレス設定エラー: {e}")
+                return False
+        
+        return False
+    
+    def set_visible(self, visible):
+        """プログレスバーの表示/非表示を切り替え"""
+        if not self.initialized:
+            return False
+        
+        # PyQt5 WinExtras版
+        if TASKBAR_AVAILABLE and self.taskbar_progress:
+            try:
+                self.taskbar_progress.setVisible(visible)
+                return True
+            except Exception as e:
+                print(f"PyQt5タスクバープログレス表示切り替えエラー: {e}")
+                return False
+        
+        # ctypes版（フォールバック）
+        elif self.main_window:
+            try:
+                if not visible:
+                    # 進捗表示をクリア
+                    self.main_window.setWindowTitle("ClipItBro by 菊池組")
+                return True
+            except Exception as e:
+                print(f"ctypesタスクバープログレス表示切り替えエラー: {e}")
+                return False
+        
+        return False
+    
+    def clear_progress(self):
+        """プログレスをクリア"""
+        return self.set_visible(False)
+    
+    def set_paused(self, paused=True):
+        """一時停止状態を設定"""
+        if not self.initialized:
+            return False
+        
+        # PyQt5 WinExtras版
+        if TASKBAR_AVAILABLE and self.taskbar_progress:
+            try:
+                self.taskbar_progress.setPaused(paused)
+                return True
+            except Exception as e:
+                print(f"PyQt5タスクバープログレス一時停止設定エラー: {e}")
+                return False
+        
+        # ctypes版は一時停止状態の設定は省略
+        return True
 
 class ThemeManager:
     """テーマ管理クラス"""
@@ -902,6 +1053,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('ClipItBro by 菊池組')
         self.setGeometry(100, 100, 700, 600)  # サイズを大きくする
 
+        # タスクバープログレス機能を初期化
+        self.taskbar_progress = TaskbarProgress(self)
+
         # 設定管理
         self.settings = QSettings('ClipItBro', 'Settings')
         
@@ -1704,6 +1858,11 @@ class MainWindow(QMainWindow):
             self.text_edit.add_log("エラー: 動画ファイルが選択されていません")
             return
         
+        # タスクバープログレスを初期化
+        if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
+            self.taskbar_progress.set_progress(0, 100)
+            self.taskbar_progress.set_visible(True)
+        
         # 出力ファイル名生成
         input_filename = os.path.basename(video_file)
         name_without_ext = os.path.splitext(input_filename)[0]
@@ -1908,6 +2067,12 @@ class MainWindow(QMainWindow):
     def update_first_pass_progress(self, progress_percent):
         """1pass解析のプログレスバーを更新"""
         self.pass1_progress_bar.setValue(int(progress_percent))
+        
+        # タスクバープログレスも更新（1pass解析は全体の25%）
+        if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
+            taskbar_progress = progress_percent * 0.25  # 1pass解析は全体の25%
+            self.taskbar_progress.set_progress(int(taskbar_progress), 100)
+        
         # 1pass解析中であることを明示
         if progress_percent < 100:
             self.convert_button.setText(f'1pass解析中... ({int(progress_percent)}%)')
@@ -1917,17 +2082,33 @@ class MainWindow(QMainWindow):
     def update_twopass_progress(self, progress_percent):
         """2pass変換の全体プログレスを更新（0-100%を1pass/2passに分割）"""
         if progress_percent <= 50:
-            # 0-50% : 1pass目
-            self.pass1_progress_bar.setValue(int(progress_percent * 2))
+            # 0-50% : 1pass目（25-62.5%のタスクバープログレス）
+            pass1_percent = int(progress_percent * 2)
+            self.pass1_progress_bar.setValue(pass1_percent)
             self.pass2_progress_bar.setValue(0)
+            
+            # タスクバープログレス更新（25%から62.5%まで）
+            if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
+                taskbar_progress = 25 + (progress_percent * 0.75)  # 25% + (0-50% * 0.75)
+                self.taskbar_progress.set_progress(int(taskbar_progress), 100)
         else:
-            # 50-100% : 2pass目
+            # 50-100% : 2pass目（62.5-100%のタスクバープログレス）
             self.pass1_progress_bar.setValue(100)
-            self.pass2_progress_bar.setValue(int((progress_percent - 50) * 2))
+            pass2_percent = int((progress_percent - 50) * 2)
+            self.pass2_progress_bar.setValue(pass2_percent)
+            
+            # タスクバープログレス更新（62.5%から100%まで）
+            if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
+                taskbar_progress = 62.5 + ((progress_percent - 50) * 0.75)  # 62.5% + (0-50% * 0.75)
+                self.taskbar_progress.set_progress(int(taskbar_progress), 100)
 
     def update_progress(self, progress_percent):
         """CRF変換のプログレスバーを更新"""
         self.single_progress_bar.setValue(int(progress_percent))
+        
+        # タスクバープログレスも更新（CRF方式は直接的）
+        if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
+            self.taskbar_progress.set_progress(int(progress_percent), 100)
 
     def conversion_finished(self, success, output_path, error_message):
         """変換完了時の処理"""
@@ -1940,6 +2121,16 @@ class MainWindow(QMainWindow):
             self.convert_button.setText('変換実行 (CRF)')
             # 単一プログレスバーを非表示
             self.single_progress_bar.setVisible(False)
+        
+        # タスクバープログレスをクリア
+        if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
+            if success:
+                # 成功時は100%を表示してからクリア
+                self.taskbar_progress.set_progress(100, 100)
+                QTimer.singleShot(1000, self.taskbar_progress.clear_progress)  # 1秒後にクリア
+            else:
+                # エラー時は即座にクリア
+                self.taskbar_progress.clear_progress()
         
         if success:
             self.text_edit.add_log("=== 変換完了 ===")
@@ -2412,6 +2603,13 @@ class MainWindow(QMainWindow):
         """Aboutダイアログを表示"""
         about_dialog = AboutDialog(self)
         about_dialog.exec_()
+    
+    def showEvent(self, event):
+        """ウィンドウが表示された時の処理"""
+        super().showEvent(event)
+        # タスクバープログレスボタンを初期化
+        if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
+            self.taskbar_progress.set_window(self)
     
     def load_theme_setting(self):
         """設定からテーマを読み込み"""

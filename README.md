@@ -46,4 +46,4 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 - FFmpegのバイナリはリポジトリに含まれていません。ユーザーが別途ダウンロードして `bin/` フォルダに配置する必要があります
 
 ---
-© 2025 ClipItBro by KIKUCHIGUMI - Simple Video Conversion Tool. All Rights Reserved.
+© 2025 KIKUCHIGUMI. All Rights Reserved.
