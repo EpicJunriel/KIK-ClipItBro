@@ -1,3 +1,4 @@
+!["ClipItBro_logo"](about/kik_clipitbro_logo.png)
 ClipItBro - powered by 菊池組
 ====================================
 
@@ -45,4 +46,4 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 - FFmpegのバイナリはリポジトリに含まれていません。ユーザーが別途ダウンロードして `bin/` フォルダに配置する必要があります
 
 ---
-© 2025 ClipItBro by KIKUCHIGUMI - Professional Video Conversion Tool
+© 2025 ClipItBro by KIKUCHIGUMI - Simple Video Conversion Tool
