@@ -187,3 +187,6 @@ EXE配布手順書.md
 build_exe.ps1
 create_release.bat
 TODO.md
+ffmpeg2pass-0.log.mbtree
+ffmpeg2pass-0.log.temp
+ffmpeg2pass-0.log.mbtree.temp
