@@ -17,7 +17,7 @@ from PyQt5.QtGui import QPixmap, QIcon, QFont, QMovie
 
 # アプリケーション情報
 APP_NAME = "ClipItBro"
-APP_VERSION = "0.0.1"
+APP_VERSION = "1.1.1"
 APP_DEVELOPER = "菊池組"
 APP_COPYRIGHT = "2025"
 
@@ -220,12 +220,30 @@ class UpdateChecker(QThread):
     update_available_signal = pyqtSignal(str)  # 新しいバージョンが利用可能
     update_check_failed_signal = pyqtSignal(str)  # チェック失敗
     unreleased_version_signal = pyqtSignal(str)  # 未公開バージョン
+    up_to_date_signal = pyqtSignal()  # 最新版
     
     def __init__(self, current_version):
         super().__init__()
         self.current_version = current_version
         # GitHub Releases APIを使用して最新バージョンを取得
         self.releases_api_url = "https://api.github.com/repos/EpicJunriel/KIK-ClipItBro/releases/latest"
+        self.release_notes = None  # リリースノートを保存
+    
+    def get_release_notes(self, version):
+        """指定されたバージョンのリリースノートをダウンロード"""
+        try:
+            # GitHubのRawファイルURLを構築（RELEASE_NOTES.txtと同じ場所に配置）
+            notes_url = f"https://github.com/EpicJunriel/KIK-ClipItBro/releases/download/{version}/RELEASE_NOTES.txt"
+            
+            request = urllib.request.Request(notes_url)
+            request.add_header('User-Agent', f'{APP_NAME}/{self.current_version}')
+            
+            with urllib.request.urlopen(request, timeout=5) as response:
+                content = response.read().decode('utf-8', errors='ignore')
+                return content.strip()
+        except Exception:
+            # リリースノートが見つからない場合はデフォルトメッセージ
+            return "このバージョンの詳細情報は、GitHubのリリースページでご確認ください。"
     
     def run(self):
         """バックグラウンドでアップデートをチェック"""
@@ -248,11 +266,14 @@ class UpdateChecker(QThread):
                 
                 if comparison_result > 0:
                     # リリース版の方が新しい場合
+                    self.release_notes = self.get_release_notes(latest_version)
                     self.update_available_signal.emit(latest_version)
                 elif comparison_result < 0:
                     # 現在のバージョンの方が新しい場合（未公開バージョン）
                     self.unreleased_version_signal.emit(latest_version)
-                # comparison_result == 0 の場合は何も表示しない（最新版）
+                else:
+                    # comparison_result == 0 の場合（最新版）
+                    self.up_to_date_signal.emit()
                     
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -2104,39 +2125,6 @@ class MainWindow(QMainWindow):
         else:
             self.info_label.setText('ファイルサイズ推定: 計算できませんでした')
             print("Estimation failed")  # デバッグ用
-        # カスタムアイコンファイルを検索（複数の形式をサポート）
-        icon_extensions = ['.ico', '.png', '.jpg', '.jpeg', '.bmp', '.gif']
-        custom_icon_path = None
-        
-        # app.icoを優先的に検索（Windowsの標準）
-        priority_paths = ['icon/app.ico', 'app.ico']
-        for path in priority_paths:
-            if os.path.exists(path):
-                custom_icon_path = path
-                break
-        
-        # .icoが見つからない場合は他の形式を検索
-        if not custom_icon_path:
-            for ext in icon_extensions[1:]:  # .ico以外
-                potential_path = f"icon/app{ext}"
-                if os.path.exists(potential_path):
-                    custom_icon_path = potential_path
-                    break
-        
-        if custom_icon_path:
-            try:
-                # カスタムアイコンを設定
-                app_icon = QIcon(custom_icon_path)
-                self.setWindowIcon(app_icon)
-                
-                # アプリケーション全体のアイコンも設定
-                QApplication.instance().setWindowIcon(app_icon)
-                
-                self.text_edit.add_log(f"アプリケーションアイコンを設定しました: {custom_icon_path}")
-            except Exception as e:
-                self.text_edit.add_log(f"アプリケーションアイコン設定エラー: {e}")
-        else:
-            self.text_edit.add_log("カスタムアプリケーションアイコンが見つかりません")
 
     def estimate_file_size(self, video_info, crf, scale_factor):
         """改良されたファイルサイズ推定アルゴリズム"""
@@ -3692,17 +3680,22 @@ class MainWindow(QMainWindow):
             # アプリケーションのアイコンを取得（通知アイコンとしても使用）
             self.notification_icon_path = None
             
-            # 複数のパスでapp.icoを探す
-            possible_paths = [
-                os.path.join(os.path.dirname(__file__), 'icon', 'app.ico'),
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon', 'app.ico'),
-                os.path.abspath(os.path.join(os.path.dirname(__file__), 'icon', 'app.ico')),
-                'icon/app.ico',
-                './icon/app.ico'
-            ]
+            # EXE環境でのリソースパス取得関数
+            def get_resource_path(relative_path):
+                """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+                if hasattr(sys, '_MEIPASS'):
+                    # PyInstallerでパッケージ化された環境
+                    return os.path.join(sys._MEIPASS, relative_path)
+                else:
+                    # 通常のPythonスクリプト環境
+                    return relative_path
+            
+            # app.icoを優先的に検索（PyInstallerのリソースパスを考慮）
+            priority_paths = ['icon/app.ico', 'app.ico']
             
             app_icon_path = None
-            for path in possible_paths:
+            for relative_path in priority_paths:
+                path = get_resource_path(relative_path)
                 if os.path.exists(path):
                     app_icon_path = path
                     self.text_edit.add_log(f"📁 アイコンファイルを発見: {path}")
@@ -4060,6 +4053,7 @@ class MainWindow(QMainWindow):
             self.update_checker.update_available_signal.connect(self.on_update_available)
             self.update_checker.update_check_failed_signal.connect(self.on_update_check_failed)
             self.update_checker.unreleased_version_signal.connect(self.on_unreleased_version)
+            self.update_checker.up_to_date_signal.connect(self.on_up_to_date)
             self.update_checker.start()
         except Exception as e:
             self.text_edit.add_log(f"アップデート確認開始エラー: {e}")
@@ -4068,6 +4062,11 @@ class MainWindow(QMainWindow):
         """アップデートが利用可能な場合の処理"""
         self.update_available = True
         self.latest_version = latest_version
+        # リリースノートも保存
+        if hasattr(self.update_checker, 'release_notes'):
+            self.release_notes = self.update_checker.release_notes
+        else:
+            self.release_notes = None
         self.update_menu_action.setVisible(True)
         self.text_edit.add_log(f"🔔 新しいバージョン {latest_version} が利用可能です！")
         
@@ -4101,6 +4100,10 @@ class MainWindow(QMainWindow):
                 5000
             )
     
+    def on_up_to_date(self):
+        """最新バージョンの場合の処理"""
+        self.text_edit.add_log(f"✅ 最新バージョンです！ (v{APP_VERSION})")
+    
     def show_update_dialog(self):
         """アップデート通知ダイアログを表示"""
         msg_box = QMessageBox(self)
@@ -4126,11 +4129,16 @@ class MainWindow(QMainWindow):
             msg_box.setWindowTitle("アップデート通知")
             msg_box.setIcon(QMessageBox.Information)
             msg_box.setText("新しいバージョンが利用可能です！")
-            msg_box.setInformativeText(
-                f"現在のバージョン: {APP_VERSION}\n"
-                f"最新バージョン: {self.latest_version}\n\n"
-                f"自動アップデートを実行しますか？"
-            )
+            
+            # リリースノートがある場合は表示
+            info_text = f"現在のバージョン: {APP_VERSION}\n最新バージョン: {self.latest_version}\n\n"
+            
+            if hasattr(self, 'release_notes') and self.release_notes:
+                info_text += f"アップデート内容:\n{self.release_notes}\n\n"
+            
+            info_text += "自動アップデートを実行しますか？"
+            
+            msg_box.setInformativeText(info_text)
             
             # ボタンをカスタマイズ
             auto_update_button = msg_box.addButton("自動アップデート", QMessageBox.AcceptRole)
