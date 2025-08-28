@@ -1,3 +1,7 @@
+<div align="center>
+   <p align="center"><img src="resources/ClipItBro_overview.png" width="600" alt="ClipItBro_overview_image" /></p>
+</div>
+
 !["ClipItBro_overview_image"](resources/ClipItBro_overview.png)
 ClipItBro - powered by 菊池組
 ====================================
