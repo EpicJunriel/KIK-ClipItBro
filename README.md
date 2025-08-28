@@ -1,4 +1,4 @@
-!["ClipItBro_logo"](about/kik_clipitbro_logo.png)
+!["ClipItBro_logo"](resources/kik_clipitbro_logo_horizontal.png)
 ClipItBro - powered by 菊池組
 ====================================
 
