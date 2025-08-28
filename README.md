@@ -72,7 +72,7 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 
 ## 更新履歴
 
-### 🟢 v1.1 (2025.08.28)
+### 🟢 [v1.1 (2025.08.28)](https://github.com/EpicJunriel/KIK-ClipItBro/releases/tag/1.1)
 - ✨️「クリップボードにコピー」機能✨️<br />
 変換後の動画をクリップボードにコピーすることができるようになりました！
 変換したらあとはCtrl+Vするだけ！
@@ -101,7 +101,7 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 - おみくじ<br />
 どこにあるんや？
 
-### 🔵 v1.0 (2025.08.27)
+### 🔵 [v1.0 (2025.08.27)](https://github.com/EpicJunriel/KIK-ClipItBro/releases/tag/1.0)
 - 2passエンコーディング
 - ファイルサイズ推定
 - ダーク/ライトテーマ
