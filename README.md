@@ -87,4 +87,4 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 
 ---
 !["KIK_logo_image"](resources/kik_clipitbro_logo_horizontal.png)
-© 2025 KIKUCHIGUMI. All Rights Reserved.
+<p align="center">© 2025 KIKUCHIGUMI. All Rights Reserved.</p>
