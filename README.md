@@ -67,8 +67,8 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 - **FFmpeg**: LGPL v2.1+ (一部コーデックはGPL v2+)
 - **Python**: Python Software Foundation License
 
-### 重要な注意事項
-- FFmpegのバイナリはリポジトリに含まれていません。ユーザーが別途ダウンロードして `bin/` フォルダに配置する必要があります
+### FFmpegについて
+- FFmpegのバイナリはリポジトリに含まれていません。ユーザーが別途ダウンロードして `_internal\bin\` フォルダに配置する必要があります
 
 ## 更新履歴
 
