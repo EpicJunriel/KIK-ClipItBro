@@ -20,7 +20,7 @@ ClipItBroはそうしたケースにおいて、ファイルサイズの縮小�
 
 ## 使用方法
 ### 基本操作
-0. `\_internal\bin\`にffmpeg.exeとffprobe.exeを置いてください
+0. **FFmpegの準備**: `ClipItBro.exe`と同じフォルダに`bin`フォルダを作成し、その中に`ffmpeg.exe`と`ffprobe.exe`を置いてください
 1. **ClipItBro.exeを起動**: ffmpegがロードできたらテキストエリアが緑色になります
 2. **ファイル読み込み**: 変換したい動画ファイルをテキストエリアにドラッグ&ドロップします
 3. **変換モード選択とパラメーター設定**: 
@@ -68,7 +68,7 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 - **Python**: Python Software Foundation License
 
 ### FFmpegについて
-- FFmpegのバイナリはリポジトリに含まれていません。ユーザーが別途ダウンロードして `_internal\bin\` フォルダに配置する必要があります
+- FFmpegのバイナリはリポジトリに含まれていません。ユーザーが別途ダウンロードして実行ファイルと同じフォルダの `bin\` フォルダに配置する必要があります
 
 ## 更新履歴
 

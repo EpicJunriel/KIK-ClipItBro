@@ -7,10 +7,38 @@ import platform
 import random
 import glob
 import ctypes
+import webbrowser
+import urllib.request
+import urllib.error
 from ctypes import wintypes
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QProgressBar, QMessageBox, QMenuBar, QAction, QDialog, QMenu, QActionGroup
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QProgressBar, QMessageBox, QMenuBar, QAction, QDialog, QMenu, QActionGroup, QSystemTrayIcon
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QMovie
+
+# アプリケーション情報
+APP_NAME = "ClipItBro"
+APP_VERSION = "0.0.1"
+APP_DEVELOPER = "菊池組"
+APP_COPYRIGHT = "2025"
+
+def get_ffmpeg_executable_path(executable_name):
+    """
+    FFmpeg実行ファイルのパスを取得（単一exe環境対応）
+    
+    Args:
+        executable_name (str): 実行ファイル名 ('ffmpeg.exe', 'ffprobe.exe', など)
+    
+    Returns:
+        str: FFmpeg実行ファイルの絶対パス
+    """
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller単一exe環境：実行ファイルと同じディレクトリのbinフォルダ
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        # 開発環境：スクリプトと同じディレクトリ
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    return os.path.join(exe_dir, 'bin', executable_name)
 
 # Windows タスクバープログレス用のインポート（利用可能性をチェック）
 try:
@@ -130,7 +158,7 @@ class TaskbarProgress:
                 progress_percent = (value * 100) // maximum
                 # ウィンドウタイトルに進捗を表示（簡易版）
                 if self.main_window:
-                    title = f"ClipItBro by 菊池組 - {progress_percent}%"
+                    title = f"{APP_NAME} {APP_VERSION} - {progress_percent}%"
                     self.main_window.setWindowTitle(title)
                 return True
             except Exception as e:
@@ -158,7 +186,7 @@ class TaskbarProgress:
             try:
                 if not visible:
                     # 進捗表示をクリア
-                    self.main_window.setWindowTitle("ClipItBro by 菊池組")
+                    self.main_window.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
                 return True
             except Exception as e:
                 print(f"ctypesタスクバープログレス表示切り替えエラー: {e}")
@@ -186,6 +214,381 @@ class TaskbarProgress:
         
         # ctypes版は一時停止状態の設定は省略
         return True
+
+class UpdateChecker(QThread):
+    """アップデート確認クラス"""
+    update_available_signal = pyqtSignal(str)  # 新しいバージョンが利用可能
+    update_check_failed_signal = pyqtSignal(str)  # チェック失敗
+    unreleased_version_signal = pyqtSignal(str)  # 未公開バージョン
+    
+    def __init__(self, current_version):
+        super().__init__()
+        self.current_version = current_version
+        # GitHub Releases APIを使用して最新バージョンを取得
+        self.releases_api_url = "https://api.github.com/repos/EpicJunriel/KIK-ClipItBro/releases/latest"
+    
+    def run(self):
+        """バックグラウンドでアップデートをチェック"""
+        try:
+            # GitHub Releases APIから最新リリース情報を取得
+            request = urllib.request.Request(self.releases_api_url)
+            request.add_header('User-Agent', f'{APP_NAME}/{self.current_version}')
+            request.add_header('Accept', 'application/vnd.github+json')
+            
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                latest_version = data.get('tag_name', '').strip()
+                
+                if not latest_version:
+                    self.update_check_failed_signal.emit("最新バージョン情報が取得できませんでした")
+                    return
+                
+                # バージョン比較
+                comparison_result = self.compare_versions(latest_version, self.current_version)
+                
+                if comparison_result > 0:
+                    # リリース版の方が新しい場合
+                    self.update_available_signal.emit(latest_version)
+                elif comparison_result < 0:
+                    # 現在のバージョンの方が新しい場合（未公開バージョン）
+                    self.unreleased_version_signal.emit(latest_version)
+                # comparison_result == 0 の場合は何も表示しない（最新版）
+                    
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                self.update_check_failed_signal.emit("リリース情報が見つかりませんでした")
+            else:
+                self.update_check_failed_signal.emit(f"GitHub API エラー: {e.code}")
+        except urllib.error.URLError as e:
+            self.update_check_failed_signal.emit(f"ネットワークエラー: {str(e)}")
+        except json.JSONDecodeError as e:
+            self.update_check_failed_signal.emit(f"レスポンス解析エラー: {str(e)}")
+        except Exception as e:
+            self.update_check_failed_signal.emit(f"アップデート確認エラー: {str(e)}")
+    
+    def compare_versions(self, version1, version2):
+        """バージョン比較（version1 > version2 なら正の値、version1 < version2 なら負の値、同じなら0を返す）"""
+        try:
+            # バージョン番号をピリオドで分割して数値として比較
+            v1_parts = [int(x) for x in version1.split('.')]
+            v2_parts = [int(x) for x in version2.split('.')]
+            
+            # 長さを合わせる（短い方に0を追加）
+            max_len = max(len(v1_parts), len(v2_parts))
+            v1_parts.extend([0] * (max_len - len(v1_parts)))
+            v2_parts.extend([0] * (max_len - len(v2_parts)))
+            
+            # 各部分を比較
+            for v1_part, v2_part in zip(v1_parts, v2_parts):
+                if v1_part > v2_part:
+                    return 1
+                elif v1_part < v2_part:
+                    return -1
+            
+            return 0  # 同じバージョン
+            
+        except (ValueError, AttributeError):
+            # バージョン形式が正しくない場合は文字列として比較
+            if version1 > version2:
+                return 1
+            elif version1 < version2:
+                return -1
+            else:
+                return 0
+    
+    def is_newer_version(self, latest, current):
+        """バージョン比較（新しいバージョンかどうかを判定）- 後方互換性のため残す"""
+        return self.compare_versions(latest, current) > 0
+
+class UpdateDownloader(QThread):
+    """アップデートファイルダウンローダー"""
+    download_progress_signal = pyqtSignal(int)  # ダウンロード進捗 (0-100)
+    download_finished_signal = pyqtSignal(str)  # ダウンロード完了（保存先パス）
+    download_error_signal = pyqtSignal(str)     # ダウンロードエラー
+    
+    def __init__(self, version, save_path):
+        super().__init__()
+        self.version = version
+        self.save_path = save_path
+        self.is_cancelled = False
+        self.download_url = None
+    
+    def cancel_download(self):
+        """ダウンロードをキャンセル"""
+        self.is_cancelled = True
+    
+    def get_github_release_exe_url(self, version):
+        """GitHub Releasesから指定バージョンのexeファイルのダウンロードURLを取得"""
+        try:
+            # GitHub Releases API URL
+            api_url = f"https://api.github.com/repos/EpicJunriel/KIK-ClipItBro/releases/tags/{version}"
+            
+            request = urllib.request.Request(api_url)
+            request.add_header('User-Agent', f'{APP_NAME}/{APP_VERSION}')
+            request.add_header('Accept', 'application/vnd.github+json')
+            
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                
+                # assetsから "ClipItBro.exe" を最優先で探す
+                for asset in data.get('assets', []):
+                    if asset['name'] == 'ClipItBro.exe':
+                        return asset['browser_download_url']
+                
+                # 次に、exeファイルで "ClipItBro" を含むものを探す
+                for asset in data.get('assets', []):
+                    if asset['name'].endswith('.exe') and 'ClipItBro' in asset['name']:
+                        return asset['browser_download_url']
+                
+                # exeファイルが見つからない場合のエラー
+                available_assets = [asset['name'] for asset in data.get('assets', [])]
+                raise Exception(f"バージョン {version} に ClipItBro.exe が見つかりません。利用可能なファイル: {available_assets}")
+                
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise Exception(f"バージョン {version} のリリースが見つかりません")
+            else:
+                raise Exception(f"GitHub API エラー: {e.code}")
+        except Exception as e:
+            raise Exception(f"リリース情報取得エラー: {str(e)}")
+    
+    def run(self):
+        """バックグラウンドでファイルをダウンロード"""
+        try:
+            # GitHub Releasesから実際のダウンロードURLを取得
+            self.download_url = self.get_github_release_exe_url(self.version)
+            
+            # リクエスト作成
+            request = urllib.request.Request(self.download_url)
+            request.add_header('User-Agent', f'{APP_NAME}/{APP_VERSION}')
+            
+            # ダウンロード開始
+            with urllib.request.urlopen(request, timeout=30) as response:
+                # ファイルサイズ取得
+                total_size = int(response.headers.get('Content-Length', 0))
+                downloaded_size = 0
+                
+                # 保存先ディレクトリを作成
+                os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+                
+                # ファイルに書き込み
+                with open(self.save_path, 'wb') as f:
+                    while not self.is_cancelled:
+                        chunk = response.read(8192)  # 8KB単位で読み込み
+                        if not chunk:
+                            break
+                        
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        
+                        # 進捗計算
+                        if total_size > 0:
+                            progress = int((downloaded_size / total_size) * 100)
+                            self.download_progress_signal.emit(progress)
+                
+                if self.is_cancelled:
+                    # キャンセルされた場合は一時ファイルを削除
+                    if os.path.exists(self.save_path):
+                        os.remove(self.save_path)
+                    return
+                
+                # ファイルの整合性チェック（基本的なサイズチェック）
+                if total_size > 0 and os.path.getsize(self.save_path) != total_size:
+                    raise Exception("ダウンロードファイルのサイズが一致しません")
+                
+                # ダウンロード完了
+                self.download_finished_signal.emit(self.save_path)
+                
+        except Exception as e:
+            self.download_error_signal.emit(str(e))
+            # エラー時は一時ファイルを削除
+            if os.path.exists(self.save_path):
+                os.remove(self.save_path)
+
+class UpdateManager:
+    """アップデート管理クラス"""
+    
+    @staticmethod
+    def get_github_release_download_url(version):
+        """指定されたバージョンのGitHub Release exeダウンロードURLを生成"""
+        return f"https://github.com/EpicJunriel/KIK-ClipItBro/releases/download/{version}/ClipItBro.exe"
+    
+    @staticmethod
+    def get_updater_batch_path():
+        """updater.batファイルのパスを取得"""
+        if hasattr(sys, '_MEIPASS'):
+            # PyInstaller単一exe環境：実行ファイルと同じディレクトリ
+            exe_dir = os.path.dirname(sys.executable)
+        else:
+            # 開発環境：スクリプトと同じディレクトリ
+            exe_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        return os.path.join(exe_dir, 'updater.bat')
+    
+    @staticmethod
+    def get_updater_exe_path():
+        """updater.exeファイルのパスを取得"""
+        if hasattr(sys, '_MEIPASS'):
+            # PyInstaller単一exe環境：実行ファイルと同じディレクトリ
+            exe_dir = os.path.dirname(sys.executable)
+        else:
+            # 開発環境：スクリプトと同じディレクトリ
+            exe_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        return os.path.join(exe_dir, 'updater.exe')
+    
+    @staticmethod
+    def check_updater_availability():
+        """GUIアップデーター(.exe)またはBATアップデーター(.bat)が利用可能かチェック"""
+        updater_exe_path = UpdateManager.get_updater_exe_path()
+        updater_bat_path = UpdateManager.get_updater_batch_path()
+        return os.path.exists(updater_exe_path) or os.path.exists(updater_bat_path)
+        """updater.batファイルが利用可能かチェック"""
+        updater_path = UpdateManager.get_updater_batch_path()
+        return os.path.exists(updater_path)
+    
+    @staticmethod
+    def execute_update_with_batch(new_exe_path):
+        """GUIアップデーター(.exe)またはBATアップデーター(.bat)を使ってアップデートを実行"""
+        try:
+            # 現在の実行ファイルパスを正しく取得
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstaller単一exe環境
+                current_exe_path = sys.executable
+            else:
+                # 開発環境
+                current_exe_path = os.path.join(os.getcwd(), "ClipItBro.exe")
+            
+            current_exe_name = os.path.basename(current_exe_path)
+            current_exe_dir = os.path.dirname(current_exe_path)
+            
+            # まずGUIアップデーター(.exe)を試行
+            updater_exe_path = UpdateManager.get_updater_exe_path()
+            if os.path.exists(updater_exe_path):
+                print(f"GUIアップデーターを使用: {updater_exe_path}")
+                # GUIアップデーターを実行（引数: 新しいexeパス, 現在のexeファイル名）
+                subprocess.Popen(
+                    [updater_exe_path, new_exe_path, current_exe_name],
+                    cwd=current_exe_dir
+                )
+                return True
+            
+            # GUIアップデーターがない場合はBATアップデーターを使用
+            updater_bat_path = UpdateManager.get_updater_batch_path()
+            if os.path.exists(updater_bat_path):
+                print(f"BATアップデーターを使用: {updater_bat_path}")
+                # BATアップデーターを実行（引数: 新しいexeパス, 現在のexeファイル名）
+                subprocess.Popen(
+                    [updater_bat_path, new_exe_path, current_exe_name],
+                    cwd=current_exe_dir,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE
+                )
+                return True
+            
+            # どちらも見つからない場合
+            raise FileNotFoundError("アップデーター（updater.exe または updater.bat）が見つかりません")
+            
+        except Exception as e:
+            print(f"アップデート実行エラー: {e}")
+            return False
+    
+    @staticmethod
+    def create_update_batch(current_exe_path, new_exe_path, restart=True):
+        """レガシー: アップデート用バッチファイルを生成（後方互換性のため残す）"""
+        current_exe_name = os.path.basename(current_exe_path)
+        
+        batch_content = f"""@echo off
+chcp 65001 > nul
+echo ======================================
+echo   ClipItBro アップデート中...
+echo ======================================
+echo.
+
+echo [1/4] 元のプロセス終了を待機中...
+:wait_loop
+tasklist /FI "IMAGENAME eq {current_exe_name}" 2>NUL | find /I /N "{current_exe_name}">NUL
+if "%ERRORLEVEL%"=="0" (
+    timeout /t 1 /nobreak >nul
+    goto wait_loop
+)
+echo ✓ プロセス終了を確認
+
+echo [2/4] バックアップ作成中...
+if exist "{current_exe_path}.backup" del "{current_exe_path}.backup"
+if exist "{current_exe_path}" (
+    move "{current_exe_path}" "{current_exe_path}.backup"
+    echo ✓ バックアップ作成完了
+) else (
+    echo ⚠ 元ファイルが見つかりません
+)
+
+echo [3/4] 新しいファイルで置換中...
+move "{new_exe_path}" "{current_exe_path}"
+if "%ERRORLEVEL%"=="0" (
+    echo ✓ ファイル置換完了
+) else (
+    echo ✗ ファイル置換失敗
+    echo 元のファイルを復元しています...
+    if exist "{current_exe_path}.backup" move "{current_exe_path}.backup" "{current_exe_path}"
+    pause
+    exit /b 1
+)
+
+echo [4/4] アップデート完了！
+
+echo.
+echo ======================================
+echo   🎉 アップデート成功！
+echo ======================================
+"""
+
+        if restart:
+            batch_content += f"""
+echo 新しいバージョンを起動しています...
+start "" "{current_exe_path}"
+"""
+
+        batch_content += """
+echo 3秒後にこのウィンドウを閉じます...
+timeout /t 3 /nobreak >nul
+
+REM 自分自身（バッチファイル）を削除
+del "%~f0"
+"""
+        
+        # バッチファイルパス生成
+        update_batch_path = os.path.join(
+            os.path.dirname(current_exe_path), 
+            "clipitbro_update.bat"
+        )
+        
+        # バッチファイル保存
+        with open(update_batch_path, 'w', encoding='shift_jis') as f:
+            f.write(batch_content)
+        
+        return update_batch_path
+    
+    @staticmethod
+    def execute_update(current_exe_path, new_exe_path, restart=True):
+        """アップデートを実行"""
+        try:
+            # バッチファイル作成
+            batch_path = UpdateManager.create_update_batch(
+                current_exe_path, new_exe_path, restart
+            )
+            
+            # バッチファイルを実行
+            subprocess.Popen(
+                [batch_path],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                shell=True
+            )
+            
+            return True
+            
+        except Exception as e:
+            print(f"アップデート実行エラー: {e}")
+            return False
 
 class ThemeManager:
     """テーマ管理クラス"""
@@ -363,15 +766,58 @@ class ThemeManager:
             background-color: {theme['menu_bg']};
             color: {theme['menu_text']};
             border: 1px solid {theme['border_color']};
+            padding: 1px;
+            font-size: 13px;
         }}
         
         QMenu::item {{
-            padding: 5px 20px;
+            padding: 2px 8px 2px 2px;
+            min-height: 16px;
+            background-color: transparent;
+            margin: 0px;
         }}
         
         QMenu::item:selected {{
             background-color: {theme['button_bg']};
             color: {theme['button_text']};
+            border-radius: 2px;
+        }}
+        
+        QMenu::indicator {{
+            width: 12px;
+            height: 12px;
+            left: 2px;
+            margin-right: 2px;
+        }}
+        
+        QMenu::indicator:checkable:checked {{
+            background-color: transparent;
+            border: none;
+        }}
+        
+        QMenu::indicator:checkable:unchecked {{
+            background-color: transparent;
+            border: none;
+            width: 0px;
+            height: 0px;
+        }}
+        
+        QMenu::indicator:checkable:checked:selected {{
+            background-color: transparent;
+            border: none;
+        }}
+        
+        QMenu::indicator:checkable:unchecked:selected {{
+            background-color: transparent;
+            border: none;
+            width: 0px;
+            height: 0px;
+        }}
+        
+        QMenu::separator {{
+            height: 1px;
+            background-color: {theme['border_color']};
+            margin: 3px 6px;
         }}
         
         QDialog {{
@@ -564,7 +1010,7 @@ class DragDropTextEdit(QTextEdit):
                     content += f"📊 CRF方式選択中 (1pass解析不要)\n"
                 content += "\n"
         else:
-            content = "ClipItBro v1.0 by 菊池組\n"
+            content = f"{APP_NAME} v{APP_VERSION} powered by {APP_DEVELOPER}\n"
             content += "動画ファイル（mp4, avi, mov等）をここにドラッグ&ドロップしてください\n"
             content += "2pass方式では、ドロップ時に自動的に1pass解析を実行します\n\n"
 
@@ -575,7 +1021,7 @@ class DragDropTextEdit(QTextEdit):
 
     def get_video_info(self, file_path):
         """FFprobeを使って動画情報を取得"""
-        ffprobe_path = os.path.normpath('bin/ffprobe.exe')
+        ffprobe_path = get_ffmpeg_executable_path('ffprobe.exe')
         try:
             # ファイルパスを適切に処理（空白を含むパスに対応）
             # Windowsの場合、パスを正規化
@@ -787,8 +1233,18 @@ class DragDropTextEdit(QTextEdit):
                         self.add_log("新しい動画ファイルを検出 - 1pass解析をリセット")
                         self.first_pass_completed = False
                         self.first_pass_data = None
+                        if hasattr(self, 'first_pass_codec'):
+                            self.first_pass_codec = None
                         if hasattr(self, '_first_pass_running'):
                             self._first_pass_running = False
+                        
+                        # 親ウィンドウのプログレスバーをリセット
+                        parent = self.parent()
+                        while parent and not hasattr(parent, 'pass1_progress_bar'):
+                            parent = parent.parent()
+                        if parent:
+                            parent.pass1_progress_bar.setValue(0)
+                            parent.pass2_progress_bar.setValue(0)
                     
                     # 動画ファイルとして処理（正規化されたパスを使用）
                     self.video_file_path = normalized_path
@@ -856,8 +1312,18 @@ class DragDropTextEdit(QTextEdit):
                                 self.add_log("新しい動画ファイルを検出 - 1pass解析をリセット")
                                 self.first_pass_completed = False
                                 self.first_pass_data = None
+                                if hasattr(self, 'first_pass_codec'):
+                                    self.first_pass_codec = None
                                 if hasattr(self, '_first_pass_running'):
                                     self._first_pass_running = False
+                                
+                                # 親ウィンドウのプログレスバーをリセット
+                                parent = self.parent()
+                                while parent and not hasattr(parent, 'pass1_progress_bar'):
+                                    parent = parent.parent()
+                                if parent:
+                                    parent.pass1_progress_bar.setValue(0)
+                                    parent.pass2_progress_bar.setValue(0)
                             
                             self.video_file_path = normalized_path
                             self.video_info = self.get_video_info(normalized_path)
@@ -980,7 +1446,8 @@ class DragDropTextEdit(QTextEdit):
                 
                 # 1pass目用のスレッドを作成
                 from PyQt5.QtCore import QThread, pyqtSignal
-                self.first_pass_thread = FirstPassThread(self.video_file_path, temp_bitrate, total_duration)
+                use_h265 = parent.use_h265_encoding if hasattr(parent, 'use_h265_encoding') else False
+                self.first_pass_thread = FirstPassThread(self.video_file_path, temp_bitrate, total_duration, use_h265)
                 self.first_pass_thread.log_signal.connect(self.add_log)
                 self.first_pass_thread.progress_signal.connect(parent.update_first_pass_progress)
                 self.first_pass_thread.finished_signal.connect(self.first_pass_finished)
@@ -1006,7 +1473,13 @@ class DragDropTextEdit(QTextEdit):
         if success:
             self.first_pass_completed = True
             self.first_pass_data = log_file_path
+            
+            # 1passで使用したコーデック情報を記録
+            use_h265 = parent.use_h265_encoding if hasattr(parent, 'use_h265_encoding') else False
+            self.first_pass_codec = 'H.265' if use_h265 else 'H.264'
+            
             self.add_log("=== 1pass解析完了 ===")
+            self.add_log(f"📹 解析時のコーデック: {self.first_pass_codec}")
             self.add_log("2pass変換の準備が整いました")
             
             # 親ウィンドウのテーマを取得して緑い背景を適用（解析完了）
@@ -1048,20 +1521,30 @@ class DragDropTextEdit(QTextEdit):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        
+        # Windows固有の設定を最初に実行（タスクバー統合のため）
+        self.setup_windows_taskbar_integration()
+        
         # MainWindowのドラッグアンドドロップは無効にして、子ウィジェットで処理
         # self.setAcceptDrops(False) を削除
-        self.setWindowTitle('ClipItBro by 菊池組')
+        self.setWindowTitle('ClipItBro')  # シンプルなタイトル（タスクバー統合のため）
         self.setGeometry(100, 100, 700, 600)  # サイズを大きくする
 
         # タスクバープログレス機能を初期化
         self.taskbar_progress = TaskbarProgress(self)
 
         # 設定管理
-        self.settings = QSettings('ClipItBro', 'Settings')
+        self.settings = QSettings('ClipItBro', 'ClipItBro')
         
         # テーマ初期化
         self.current_theme = ThemeManager.LIGHT_THEME
         self.load_theme_setting()
+        
+        # 自動クリップボードコピー設定を読み込み
+        self.auto_clipboard_copy = self.settings.value('auto_clipboard_copy', False, type=bool)
+        
+        # H.265エンコード設定を読み込み（試験的機能）
+        self.use_h265_encoding = self.settings.value('use_h265_encoding', False, type=bool)
         
         # 状態管理（テーマ変更時の背景色復元用）
         self.current_status = 'default'  # default, success, error, warning, active
@@ -1070,6 +1553,13 @@ class MainWindow(QMainWindow):
         # エンコード方式管理
         self.encoding_mode = 'twopass'  # 'twopass' または 'crf'
 
+        # アップデート確認機能
+        self.update_available = False  # アップデートが利用可能かどうか
+        self.latest_version = None     # 最新バージョン
+        self.is_unreleased_version = False  # 未公開バージョンかどうか
+        self.released_version = None   # リリース版のバージョン
+        self.update_menu_action = None # アップデートメニューアクション
+
         # メニューバーを作成
         self.create_menu_bar()
 
@@ -1077,9 +1567,35 @@ class MainWindow(QMainWindow):
         central_widget = QWidget(self)
         main_layout = QVBoxLayout(central_widget)
 
+        # テキストエリアコンテナ（警告バー含む）
+        self.text_area_container = QWidget()
+        text_container_layout = QVBoxLayout(self.text_area_container)
+        text_container_layout.setContentsMargins(0, 0, 0, 0)
+        text_container_layout.setSpacing(0)
+
         # ffmpeg情報表示エリア（ドラッグ＆ドロップ対応）
         self.text_edit = DragDropTextEdit(self)
-        main_layout.addWidget(self.text_edit)
+        text_container_layout.addWidget(self.text_edit)
+
+        # H.265警告バー（初期は非表示）
+        self.h265_warning_bar = QLabel()
+        self.h265_warning_bar.setText("⚠️ H.265 エンコーディング（試験的機能）が有効です - 一部デバイスで再生できない場合があります")
+        self.h265_warning_bar.setAlignment(Qt.AlignCenter)
+        self.h265_warning_bar.setStyleSheet("""
+            QLabel {
+                background-color: #ffebee;
+                color: #c62828;
+                border: 1px solid #ef5350;
+                padding: 4px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+        """)
+        self.h265_warning_bar.setFixedHeight(24)
+        self.h265_warning_bar.setVisible(False)  # 初期は非表示
+        text_container_layout.addWidget(self.h265_warning_bar)
+
+        main_layout.addWidget(self.text_area_container)
 
         # パラメータ入力欄（画面下部に固定）
         param_widget = QWidget(self)
@@ -1238,8 +1754,30 @@ class MainWindow(QMainWindow):
         # テーマを適用（すべてのウィジェット作成後）
         self.apply_theme()
         
+        # システムトレイアイコンを初期化（通知機能用）
+        self.init_system_tray()
+        
         # FFmpeg バージョン表示（テーマ適用後）
         self.show_ffmpeg_version()
+        
+        # H.265警告バーの初期状態を設定
+        self.update_h265_warning_bar()
+        
+        # アップデート確認を開始（2秒後に実行）
+        QTimer.singleShot(2000, self.start_update_check)
+
+    def setup_windows_taskbar_integration(self):
+        """Windowsタスクバー統合の設定（テスト用に無効化）"""
+        # updater.exeでは動作するため、このコードが原因の可能性
+        # 一旦無効化してテスト
+        print("Windows統合コード: 無効化中（テスト）")
+        pass
+
+    def ensure_taskbar_integration(self):
+        """ウィンドウ作成後のタスクバー統合確認（テスト用に無効化）"""
+        # 一旦無効化してテスト
+        print("タスクバー統合確認: 無効化中（テスト）")
+        pass
 
     def set_application_icon(self):
         # EXE環境でのリソースパス取得
@@ -1289,7 +1827,7 @@ class MainWindow(QMainWindow):
                     try:
                         import ctypes
                         # アプリケーションユーザーモデルIDを設定してタスクバーアイコンを独立させる
-                        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClipItBro.菊池組.動画変換")
+                        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"{APP_NAME}.{APP_DEVELOPER}.動画変換")
                     except Exception as e:
                         self.text_edit.add_log(f"タスクバーアイコン設定警告: {e}")
                 
@@ -1400,8 +1938,15 @@ class MainWindow(QMainWindow):
             if hasattr(self.text_edit, 'first_pass_completed'):
                 self.text_edit.first_pass_completed = False
                 self.text_edit.first_pass_data = None
+                if hasattr(self.text_edit, 'first_pass_codec'):
+                    self.text_edit.first_pass_codec = None
                 if hasattr(self.text_edit, '_first_pass_running'):
                     self.text_edit._first_pass_running = False
+                
+                # プログレスバーを0%にリセット
+                self.pass1_progress_bar.setValue(0)
+                self.pass2_progress_bar.setValue(0)
+                
                 self.text_edit.add_log("CRF方式に切り替え - 1pass解析をリセット")
             
             # CRF方式では動画があれば実行ボタンを有効化
@@ -1433,6 +1978,8 @@ class MainWindow(QMainWindow):
             if hasattr(self.text_edit, 'first_pass_completed'):
                 self.text_edit.first_pass_completed = False
                 self.text_edit.first_pass_data = None
+                if hasattr(self.text_edit, 'first_pass_codec'):
+                    self.text_edit.first_pass_codec = None
                 if hasattr(self.text_edit, '_first_pass_running'):
                     self.text_edit._first_pass_running = False
                 self.text_edit.add_log("2pass方式に切り替え - 1pass解析をリセット")
@@ -1769,8 +2316,8 @@ class MainWindow(QMainWindow):
     def show_ffmpeg_version(self):
         # 最初にウォーターマークを表示
         
-        ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
-        ffprobe_path = os.path.normpath('bin/ffprobe.exe')
+        ffmpeg_path = get_ffmpeg_executable_path('ffmpeg.exe')
+        ffprobe_path = get_ffmpeg_executable_path('ffprobe.exe')
         
         # FFmpegのチェック
         try:
@@ -1868,14 +2415,20 @@ class MainWindow(QMainWindow):
         name_without_ext = os.path.splitext(input_filename)[0]
         timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         
+        # コーデック識別子
+        codec_suffix = "_H265" if self.use_h265_encoding else ""
+        
         if self.encoding_mode == 'twopass':
-            output_filename = f"ClipItBro_{timestamp}_2pass_{name_without_ext}.mp4"
+            output_filename = f"ClipItBro_{timestamp}_2pass{codec_suffix}_{name_without_ext}.mp4"
         else:
-            output_filename = f"ClipItBro_{timestamp}_CRF_{name_without_ext}.mp4"
+            output_filename = f"ClipItBro_{timestamp}_CRF{codec_suffix}_{name_without_ext}.mp4"
             
         output_path = os.path.join(os.path.dirname(video_file), output_filename)
         
+        # ログ出力
+        codec_name = "H.265 (HEVC)" if self.use_h265_encoding else "H.264 (x264)"
         self.text_edit.add_log(f"=== {self.encoding_mode.upper()}変換開始 ===")
+        self.text_edit.add_log(f"🎥 コーデック: {codec_name}")
         self.text_edit.add_log(f"入力ファイル: {input_filename}")
         self.text_edit.add_log(f"出力ファイル: {output_filename}")
         
@@ -1891,6 +2444,21 @@ class MainWindow(QMainWindow):
         if not video_info:
             self.text_edit.add_log("エラー: 動画情報が取得されていません")
             return
+        
+        # 1passデータとコーデック設定の整合性チェック
+        if hasattr(self.text_edit, 'first_pass_completed') and self.text_edit.first_pass_completed:
+            if hasattr(self.text_edit, 'first_pass_codec'):
+                current_codec = 'H.265' if self.use_h265_encoding else 'H.264'
+                if self.text_edit.first_pass_codec != current_codec:
+                    self.text_edit.add_log("⚠️ 1passデータとコーデック設定が不整合です")
+                    self.text_edit.add_log(f"1pass時: {self.text_edit.first_pass_codec}, 現在: {current_codec}")
+                    self.text_edit.add_log("1passデータを破棄して再解析を実行します...")
+                    
+                    # 1passデータをリセット
+                    self.text_edit.first_pass_completed = False
+                    self.text_edit.first_pass_data = None
+                    if hasattr(self.text_edit, '_first_pass_running'):
+                        self.text_edit._first_pass_running = False
         
         # パラメータ取得
         target_size = self.size_slider.value()
@@ -1940,7 +2508,7 @@ class MainWindow(QMainWindow):
         try:
             # 2pass変換用のスレッドを作成
             self.conversion_thread = TwoPassConversionThread(
-                video_file, output_path, target_bitrate, total_duration
+                video_file, output_path, target_bitrate, total_duration, use_h265=self.use_h265_encoding
             )
             self.conversion_thread.log_signal.connect(self.text_edit.add_log)
             self.conversion_thread.progress_signal.connect(self.update_twopass_progress)
@@ -1956,13 +2524,18 @@ class MainWindow(QMainWindow):
     def execute_second_pass_only(self, video_file, output_path, target_bitrate):
         """2pass目のみ実行（1pass目は完了済み）"""
         # FFmpegコマンド構築（2pass目）
-        ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
+        ffmpeg_path = get_ffmpeg_executable_path('ffmpeg.exe')
+        
+        # コーデック選択
+        video_codec = 'libx265' if self.use_h265_encoding else 'libx264'
+        codec_name = 'H.265 (HEVC)' if self.use_h265_encoding else 'H.264 (x264)'
+        self.text_edit.add_log(f"📹 使用コーデック: {codec_name}")
         
         cmd = [
             ffmpeg_path,
             '-y',  # ファイル上書き許可
             '-i', video_file,
-            '-c:v', 'libx264',
+            '-c:v', video_codec,
             '-b:v', f'{target_bitrate}k',
             '-pass', '2',
             '-c:a', 'aac',
@@ -1990,7 +2563,7 @@ class MainWindow(QMainWindow):
             # 2pass目のプログレスバー更新のためTwoPassConversionThreadを使用
             self.twopass_thread = TwoPassConversionThread(
                 video_file, output_path, target_bitrate, total_duration, 
-                second_pass_only=True
+                second_pass_only=True, use_h265=self.use_h265_encoding
             )
             self.twopass_thread.log_signal.connect(self.text_edit.add_log)
             self.twopass_thread.progress_signal.connect(self.update_twopass_progress)
@@ -2011,7 +2584,7 @@ class MainWindow(QMainWindow):
         self.text_edit.add_log(f"CRF: {crf}, スケール: {vf}")
         
         # FFmpegコマンド構築
-        ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
+        ffmpeg_path = get_ffmpeg_executable_path('ffmpeg.exe')
         cmd = [
             ffmpeg_path,
             '-i', video_file,
@@ -2161,10 +2734,31 @@ class MainWindow(QMainWindow):
 
     def show_completion_dialog(self, output_path):
         """変換完了ダイアログを表示"""
-        msg_box = QMessageBox(self)
         
-        # ランダム画像選択機能
+        # ファイル情報を取得
+        file_name = os.path.basename(output_path)
+        clipboard_copied = False
+        
+        # 自動クリップボードコピー設定が有効な場合、先にコピーを実行
+        if self.auto_clipboard_copy:
+            self.text_edit.add_log("📋 自動クリップボードコピーが有効です")
+            if self.copy_file_to_clipboard(output_path, show_notification=False):
+                self.text_edit.add_log("✓ 変換完了時に自動でクリップボードにコピーしました")
+                clipboard_copied = True
+            else:
+                self.text_edit.add_log("⚠ 自動クリップボードコピーに失敗しました")
+        
+        # ランダム画像選択機能（ダイアログと通知で共有）
         custom_icon_path = self.get_random_completion_icon()
+        
+        # システム通知を表示（ランダム画像を渡す）
+        self.show_conversion_completion_notification(output_path, clipboard_copied, custom_icon_path)
+        
+        # 親なしでQMessageBoxを作成（タイトルに自動でアプリ名が追加されるのを防ぐ）
+        msg_box = QMessageBox()
+        
+        # ウィンドウの閉じるボタンを確実に有効にする
+        msg_box.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint)
         
         if custom_icon_path:
             try:
@@ -2197,10 +2791,16 @@ class MainWindow(QMainWindow):
         # カスタムボタンを追加
         ok_button = msg_box.addButton("OK", QMessageBox.AcceptRole)
         folder_button = msg_box.addButton("フォルダを開く", QMessageBox.ActionRole)
+        clipboard_button = msg_box.addButton("クリップボードにコピー", QMessageBox.ActionRole)
+        
+        # デフォルトボタンとエスケープボタンを設定（バツボタン対応）
+        msg_box.setDefaultButton(ok_button)
+        msg_box.setEscapeButton(ok_button)
         
         # ボタンにテーマスタイルを適用
         ThemeManager.apply_theme_to_widget(ok_button, self.current_theme)
         ThemeManager.apply_theme_to_widget(folder_button, self.current_theme)
+        ThemeManager.apply_theme_to_widget(clipboard_button, self.current_theme)
         
         # QMessageBox全体にもテーマを適用
         msg_box_style = f"""
@@ -2216,10 +2816,10 @@ class MainWindow(QMainWindow):
             background-color: {self.current_theme['button_bg']} !important;
             color: {self.current_theme['button_text']} !important;
             border: none;
-            padding: 8px 16px;
+            padding: 8px 12px;
             border-radius: 4px;
             font-weight: bold;
-            min-width: 80px;
+            min-width: auto;
         }}
         QMessageBox QPushButton:hover {{
             background-color: {self.current_theme['button_hover']} !important;
@@ -2235,7 +2835,11 @@ class MainWindow(QMainWindow):
         
         # クリックされたボタンを確認
         clicked_button = msg_box.clickedButton()
-        if clicked_button == folder_button:
+        
+        # バツボタンまたはESCキーで閉じられた場合の判定
+        if clicked_button is None or result == QMessageBox.Close:
+            self.text_edit.add_log("ダイアログのバツボタン（閉じる）またはESCキーが押されました")
+        elif clicked_button == folder_button:
             self.text_edit.add_log("フォルダを開くボタンがクリックされました")
             self.text_edit.add_log(f"対象ファイル: {output_path}")
             
@@ -2252,12 +2856,70 @@ class MainWindow(QMainWindow):
                     self.open_output_folder(folder_path)
                 else:
                     self.text_edit.add_log(f"⚠ フォルダも見つかりません: {folder_path}")
+        
+        elif clicked_button == clipboard_button:
+            self.text_edit.add_log("クリップボードにコピーボタンがクリックされました")
+            self.copy_file_to_clipboard(output_path, show_notification=True)
         else:
             self.text_edit.add_log("OKボタンがクリックされました")
 
+    def copy_file_to_clipboard(self, file_path, show_notification=True):
+        """変換完了したファイルをエクスプローラーと同じ形式でクリップボードにコピー"""
+        try:
+            from PyQt5.QtCore import QMimeData, QUrl
+            
+            # ファイルの存在確認
+            if not os.path.exists(file_path):
+                self.text_edit.add_log(f"⚠ ファイルが見つかりません: {file_path}")
+                if show_notification:
+                    QMessageBox.warning(self, "エラー", "ファイルが見つかりません。")
+                return False
+            
+            # PyQt5でエクスプローラーと同じ形式でコピー
+            clipboard = QApplication.clipboard()
+            mime_data = QMimeData()
+            
+            # ファイルパスを正規化
+            normalized_path = os.path.abspath(file_path)
+            file_url = QUrl.fromLocalFile(normalized_path)
+            mime_data.setUrls([file_url])
+            
+            # クリップボードにセット
+            clipboard.setMimeData(mime_data)
+            
+            # 成功ログと通知
+            filename = os.path.basename(file_path)
+            self.text_edit.add_log(f"✓ ファイルをクリップボードにコピーしました: {filename}")
+            
+            # 成功通知ダイアログ（手動実行時のみ）
+            if show_notification:
+                QMessageBox.information(self, "クリップボードにコピー", 
+                    f"ファイルをクリップボードにコピーしました。\n\n"
+                    f"ファイル名: {filename}\n\n"
+                    f"他のアプリケーションで Ctrl+V で貼り付けできます。")
+            
+            return True
+            
+        except ImportError:
+            # PyQt5のQMimeDataが利用できない場合のフォールバック
+            self.text_edit.add_log("⚠ PyQt5のクリップボード機能が利用できません")
+            if show_notification:
+                QMessageBox.warning(self, "エラー", "クリップボード機能が利用できません。")
+            return False
+            
+        except Exception as e:
+            self.text_edit.add_log(f"⚠ クリップボードコピーに失敗: {e}")
+            if show_notification:
+                QMessageBox.warning(self, "エラー", f"クリップボードへのコピーに失敗しました。\n\nエラー: {e}")
+            return False
+
     def show_error_dialog(self, error_message):
         """変換エラーダイアログを表示"""
-        msg_box = QMessageBox(self)
+        # 親なしでQMessageBoxを作成（タイトルに自動でアプリ名が追加されるのを防ぐ）
+        msg_box = QMessageBox()
+        
+        # ウィンドウの閉じるボタンを確実に有効にする
+        msg_box.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint)
         
         # ランダムエラー画像選択機能
         custom_icon_path = self.get_random_error_icon()
@@ -2301,10 +2963,10 @@ class MainWindow(QMainWindow):
             background-color: {self.current_theme['button_bg']} !important;
             color: {self.current_theme['button_text']} !important;
             border: none;
-            padding: 8px 16px;
+            padding: 8px 12px;
             border-radius: 4px;
             font-weight: bold;
-            min-width: 80px;
+            min-width: auto;
         }}
         QMessageBox QPushButton:hover {{
             background-color: {self.current_theme['button_hover']} !important;
@@ -2690,15 +3352,73 @@ class MainWindow(QMainWindow):
             except Exception as e2:
                 self.text_edit.add_log(f"最終フォールバックもエラー: {e2}")
 
+    def create_checkmark_icon(self, checked=True, theme=None):
+        """チェックマークアイコンを作成"""
+        if theme is None:
+            theme = self.current_theme
+        
+        from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
+        from PyQt5.QtCore import Qt
+        
+        # 12x12のピクセルマップを作成
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        if checked:
+            # チェックマークを描画
+            pen = QPen()
+            # 背景色との強いコントラストを確保
+            if theme['name'] == 'Dark':
+                pen.setColor(QColor('#ffffff'))  # ダークテーマでは白
+            else:
+                pen.setColor(QColor('#000000'))  # ライトテーマでは黒
+            pen.setWidth(2)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            
+            # チェックマークのパスを描画（少し中央寄りに）
+            painter.drawLine(3, 6, 5, 8)
+            painter.drawLine(5, 8, 9, 4)
+        
+        painter.end()
+        return QIcon(pixmap)
+
+    def update_menu_checkmarks(self):
+        """メニューのチェックマーク表示を更新"""
+        # テーマメニューの更新
+        for action in self.theme_group.actions():
+            if action.isChecked():
+                action.setIcon(self.create_checkmark_icon(True))
+            else:
+                action.setIcon(QIcon())  # アイコンをクリア
+        
+        # クリップボードアクションの更新
+        if hasattr(self, 'auto_clipboard_action'):
+            if self.auto_clipboard_action.isChecked():
+                self.auto_clipboard_action.setIcon(self.create_checkmark_icon(True))
+            else:
+                self.auto_clipboard_action.setIcon(QIcon())
+        
+        # H.265エンコードアクションの更新
+        if hasattr(self, 'h265_action'):
+            if self.h265_action.isChecked():
+                self.h265_action.setIcon(self.create_checkmark_icon(True))
+            else:
+                self.h265_action.setIcon(QIcon())
+
     def create_menu_bar(self):
         """メニューバーを作成"""
         menubar = self.menuBar()
         
-        # 表示メニュー
-        view_menu = menubar.addMenu('表示')
+        # 設定メニュー
+        settings_menu = menubar.addMenu('設定')
         
         # テーマサブメニュー
-        theme_menu = view_menu.addMenu('テーマ')
+        theme_menu = settings_menu.addMenu('テーマ')
         
         # テーマアクショングループ（排他選択）
         self.theme_group = QActionGroup(self)
@@ -2719,6 +3439,31 @@ class MainWindow(QMainWindow):
         self.theme_group.addAction(dark_action)
         theme_menu.addAction(dark_action)
         
+        # セパレーター追加
+        settings_menu.addSeparator()
+        
+        # クリップボード自動コピー設定
+        self.auto_clipboard_action = QAction('変換完了時にクリップボードへコピー', self)
+        self.auto_clipboard_action.setCheckable(True)
+        self.auto_clipboard_action.setChecked(self.auto_clipboard_copy)
+        self.auto_clipboard_action.triggered.connect(self.toggle_auto_clipboard_copy)
+        settings_menu.addAction(self.auto_clipboard_action)
+        
+        # H.265エンコード設定（試験的機能）
+        self.h265_action = QAction('(試験的) H.265エンコードを使用', self)
+        self.h265_action.setCheckable(True)
+        self.h265_action.setChecked(self.use_h265_encoding)
+        self.h265_action.triggered.connect(self.toggle_h265_encoding)
+        settings_menu.addAction(self.h265_action)
+        
+        # セパレーター追加
+        settings_menu.addSeparator()
+        
+        # おみくじ（デバッグ用）
+        test_notification_action = QAction('おみくじ', self)
+        test_notification_action.triggered.connect(self.test_notification)
+        settings_menu.addAction(test_notification_action)
+        
         # ヘルプメニュー
         help_menu = menubar.addMenu('ヘルプ')
         
@@ -2727,6 +3472,15 @@ class MainWindow(QMainWindow):
         about_action.setShortcut('F1')
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
+        
+        # アップデートメニュー（最初は非表示）
+        self.update_menu_action = QAction('🔔 アップデートがあります！', self)
+        self.update_menu_action.triggered.connect(self.show_update_dialog)
+        self.update_menu_action.setVisible(False)  # 最初は非表示
+        menubar.addAction(self.update_menu_action)
+        
+        # チェックマーク表示を更新
+        self.update_menu_checkmarks()
     
     def show_about_dialog(self):
         """Aboutダイアログを表示"""
@@ -2739,6 +3493,11 @@ class MainWindow(QMainWindow):
         # タスクバープログレスボタンを初期化
         if hasattr(self, 'taskbar_progress') and self.taskbar_progress:
             self.taskbar_progress.set_window(self)
+        
+        # タスクバー統合の最終確認（ウィンドウ表示後）- テスト用に無効化
+        # if hasattr(self, 'ensure_taskbar_integration'):
+        #     QTimer.singleShot(200, self.ensure_taskbar_integration)
+        print("showEvent: タスクバー統合の最終確認を無効化中（テスト）")
     
     def load_theme_setting(self):
         """設定からテーマを読み込み"""
@@ -2751,6 +3510,474 @@ class MainWindow(QMainWindow):
     def save_theme_setting(self):
         """テーマ設定を保存"""
         self.settings.setValue('theme', self.current_theme['name'])
+    
+    def toggle_auto_clipboard_copy(self):
+        """自動クリップボードコピー設定を切り替え"""
+        self.auto_clipboard_copy = self.auto_clipboard_action.isChecked()
+        self.settings.setValue('auto_clipboard_copy', self.auto_clipboard_copy)
+        
+        # チェックマーク表示を更新
+        self.update_menu_checkmarks()
+        
+        # ログに設定変更を記録
+        status = "有効" if self.auto_clipboard_copy else "無効"
+        self.text_edit.add_log(f"📋 変換完了時の自動クリップボードコピー: {status}")
+    
+    def toggle_h265_encoding(self):
+        """H.265エンコード設定を切り替え（試験的機能）"""
+        self.use_h265_encoding = self.h265_action.isChecked()
+        self.settings.setValue('use_h265_encoding', self.use_h265_encoding)
+        
+        # 1pass実行中の場合は強制停止
+        if hasattr(self.text_edit, '_first_pass_running') and self.text_edit._first_pass_running:
+            self.text_edit.add_log("⚠️ 1pass実行中にコーデック変更が検出されました")
+            self.text_edit.add_log("🛑 安全のため1pass処理を停止します...")
+            
+            # 実行中のfirst_pass_threadを停止
+            if hasattr(self, 'first_pass_thread') and self.first_pass_thread and self.first_pass_thread.isRunning():
+                self.first_pass_thread.stop()
+                self.first_pass_thread.wait(3000)  # 最大3秒待機
+                if self.first_pass_thread.isRunning():
+                    self.first_pass_thread.terminate()  # 強制終了
+                    self.first_pass_thread.wait(1000)
+                self.text_edit.add_log("✓ 1pass処理を停止しました")
+            
+            # text_edit内のfirst_pass_threadも停止
+            if hasattr(self.text_edit, 'first_pass_thread') and self.text_edit.first_pass_thread and self.text_edit.first_pass_thread.isRunning():
+                self.text_edit.first_pass_thread.stop()
+                self.text_edit.first_pass_thread.wait(3000)
+                if self.text_edit.first_pass_thread.isRunning():
+                    self.text_edit.first_pass_thread.terminate()
+                    self.text_edit.first_pass_thread.wait(1000)
+            
+            # 1passの一時ファイルをクリーンアップ
+            try:
+                temp_files = ['ffmpeg2pass-0.log', 'ffmpeg2pass-0.log.mbtree']
+                for temp_file in temp_files:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                        self.text_edit.add_log(f"🗑️ 一時ファイルを削除: {temp_file}")
+            except Exception as e:
+                self.text_edit.add_log(f"⚠️ 一時ファイル削除エラー: {e}")
+        
+        # コーデック変更時は1passデータを破棄（H.264とH.265で互換性がないため）
+        if hasattr(self.text_edit, 'first_pass_completed') and self.text_edit.first_pass_completed:
+            self.text_edit.first_pass_completed = False
+            self.text_edit.first_pass_data = None
+            if hasattr(self.text_edit, 'first_pass_codec'):
+                self.text_edit.first_pass_codec = None
+            if hasattr(self.text_edit, '_first_pass_running'):
+                self.text_edit._first_pass_running = False
+            
+            # プログレスバーを0%にリセット
+            self.pass1_progress_bar.setValue(0)
+            self.pass2_progress_bar.setValue(0)
+            
+            # 変換ボタンを無効化（1pass再実行が必要）
+            self.convert_button.setEnabled(False)
+            self.convert_button.setText('1pass解析開始')
+            
+            self.text_edit.add_log("⚠️ コーデック変更により1pass解析データを破棄しました")
+        
+        # 実行中フラグのリセット（停止処理後に確実にクリア）
+        if hasattr(self.text_edit, '_first_pass_running'):
+            self.text_edit._first_pass_running = False
+        
+        # プログレスバーを0%にリセット（実行中停止の場合も対応）
+        self.pass1_progress_bar.setValue(0)
+        self.pass2_progress_bar.setValue(0)
+        
+        # 変換ボタンの状態を適切に設定
+        if self.text_edit.video_file_path and self.encoding_mode == 'twopass':
+            self.convert_button.setEnabled(True)
+            self.convert_button.setText('1pass解析開始')
+        elif self.text_edit.video_file_path and self.encoding_mode == 'crf':
+            self.convert_button.setEnabled(True)
+            self.convert_button.setText('変換実行 (CRF)')
+        else:
+            self.convert_button.setEnabled(False)
+        
+        # チェックマーク表示を更新
+        self.update_menu_checkmarks()
+        
+        # ログに設定変更を記録
+        codec_name = "H.265 (HEVC)" if self.use_h265_encoding else "H.264 (x264)"
+        status = "有効" if self.use_h265_encoding else "無効"
+        self.text_edit.add_log(f"🎬 H.265エンコード（試験的機能）: {status}")
+        self.text_edit.add_log(f"📹 使用コーデック: {codec_name}")
+        
+        if self.use_h265_encoding:
+            self.text_edit.add_log("⚠️ H.265は高効率ですが、一部デバイスで再生できない場合があります")
+        
+        # H.265警告バーの表示切り替え
+        self.update_h265_warning_bar()
+    
+    def update_h265_warning_bar(self):
+        """H.265警告バーの表示状態を更新"""
+        if hasattr(self, 'h265_warning_bar'):
+            if self.use_h265_encoding:
+                # テーマに応じて警告バーの色を調整
+                if hasattr(self, 'current_theme') and self.current_theme['name'] == 'Dark':
+                    # ダークテーマ用の色
+                    self.h265_warning_bar.setStyleSheet("""
+                        QLabel {
+                            background-color: #4a1a1a;
+                            color: #ff8a80;
+                            border: 1px solid #d32f2f;
+                            padding: 4px;
+                            font-weight: bold;
+                            font-size: 11px;
+                        }
+                    """)
+                else:
+                    # ライトテーマ用の色
+                    self.h265_warning_bar.setStyleSheet("""
+                        QLabel {
+                            background-color: #ffebee;
+                            color: #c62828;
+                            border: 1px solid #ef5350;
+                            padding: 4px;
+                            font-weight: bold;
+                            font-size: 11px;
+                        }
+                    """)
+                self.h265_warning_bar.setVisible(True)
+            else:
+                self.h265_warning_bar.setVisible(False)
+    
+    def test_notification(self):
+        """通知機能をテスト"""
+        self.text_edit.add_log("🧪 通知テストを実行します...")
+        
+        # テスト通知を表示（複数通知システムを試行）
+        title = f"⛩️ おみくじ（通知テスト）"
+        message = "通知のテストだよ～"
+        
+        success = False
+        
+        # テスト用のランダムアイコンを取得
+        test_icon_path = self.get_random_completion_icon()
+        
+        # 1. Windowsバルーン通知（最も確実、ランダムアイコン付き）
+        if not success:
+            self.text_edit.add_log("🔄 Windowsバルーン通知を試行中...")
+            success = self.show_windows_balloon_notification(title, message, test_icon_path)
+            if success:
+                self.text_edit.add_log("✅ Windowsバルーン通知が成功しました")
+        
+        # 2. QSystemTrayIcon（PyQt5標準）
+        if not success:
+            self.text_edit.add_log("🔄 PyQt5システムトレイ通知を試行中...")
+            success = self.show_system_notification(title, message, duration=8000)
+            if success:
+                self.text_edit.add_log("✅ PyQt5通知が成功しました")
+        
+        if success:
+            self.text_edit.add_log("✓ テスト通知を送信しました（Windowsの右下を確認してください）")
+        else:
+            self.text_edit.add_log("⚠ すべてのテスト通知方法が失敗しました")
+    
+    def init_system_tray(self):
+        """システムトレイアイコンを初期化（通知機能用）"""
+        try:
+            # システムトレイが利用可能かチェック
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                self.text_edit.add_log("⚠ システムトレイが利用できません")
+                self.tray_icon = None
+                return
+            
+            # トレイアイコンを作成
+            self.tray_icon = QSystemTrayIcon(self)
+            
+            # アプリケーションのアイコンを取得（通知アイコンとしても使用）
+            self.notification_icon_path = None
+            
+            # 複数のパスでapp.icoを探す
+            possible_paths = [
+                os.path.join(os.path.dirname(__file__), 'icon', 'app.ico'),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon', 'app.ico'),
+                os.path.abspath(os.path.join(os.path.dirname(__file__), 'icon', 'app.ico')),
+                'icon/app.ico',
+                './icon/app.ico'
+            ]
+            
+            app_icon_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    app_icon_path = path
+                    self.text_edit.add_log(f"📁 アイコンファイルを発見: {path}")
+                    break
+                else:
+                    self.text_edit.add_log(f"🔍 アイコン検索: {path} (見つからず)")
+            
+            if app_icon_path:
+                # アイコンファイルが存在する場合
+                icon = QIcon(app_icon_path)
+                self.tray_icon.setIcon(icon)
+                self.notification_icon_path = app_icon_path
+                self.text_edit.add_log("✓ システムトレイアイコンを初期化しました（app.ico使用）")
+            else:
+                # デフォルトアイコンを使用
+                default_icon = self.style().standardIcon(self.style().SP_ComputerIcon)
+                self.tray_icon.setIcon(default_icon)
+                self.text_edit.add_log("✓ システムトレイアイコンを初期化しました（デフォルトアイコン）")
+                
+            # トレイアイコンのツールチップ（これは通知名に影響しないはず）
+            self.tray_icon.setToolTip("ClipItBro")
+            
+            # トレイアイコンを表示（重要！）
+            self.tray_icon.show()
+            self.text_edit.add_log("✓ システムトレイアイコンを表示しました")
+            
+            # Windows APIで通知アプリ名を明示的に設定を試行
+            self.try_set_notification_app_name()
+            
+        except Exception as e:
+            self.text_edit.add_log(f"⚠ システムトレイアイコンの初期化に失敗: {e}")
+            self.tray_icon = None
+            self.notification_icon_path = None
+    
+    def try_set_notification_app_name(self):
+        """Windows APIを使用してアプリケーション名とアイコンを明示的に設定を試行"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            # SetCurrentProcessExplicitAppUserModelIDを使用してアプリID設定
+            shell32 = ctypes.windll.shell32
+            shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
+            shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
+            
+            # アプリID設定（通知名に影響する可能性）
+            app_id = "ClipItBro"
+            result = shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+            
+            if result == 0:  # S_OK
+                self.text_edit.add_log("✓ Windows APIでアプリケーションIDを設定しました")
+                
+                # 追加: Windowsレジストリにアプリケーション情報を登録
+                self.register_app_in_windows()
+            else:
+                self.text_edit.add_log(f"⚠ Windows APIアプリケーションID設定に失敗: {result}")
+            
+            # 追加: アプリケーションアイコンをWindowsに登録
+            if hasattr(self, 'notification_icon_path') and self.notification_icon_path:
+                self.try_register_app_icon()
+                
+        except Exception as e:
+            self.text_edit.add_log(f"📝 Windows APIアプリケーションID設定をスキップ: {e}")
+    
+    def register_app_in_windows(self):
+        """Windowsレジストリにアプリケーション情報を登録"""
+        try:
+            import winreg
+            
+            app_id = "ClipItBro"
+            app_name = "ClipItBro"
+            
+            # アプリケーション情報を登録
+            app_key_path = f"SOFTWARE\\Classes\\AppUserModelId\\{app_id}"
+            
+            # HKEY_CURRENT_USERに登録（管理者権限不要）
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, app_key_path) as key:
+                # アプリケーション表示名
+                winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, app_name)
+                
+                # アイコンパスを登録
+                if hasattr(self, 'notification_icon_path') and self.notification_icon_path:
+                    icon_path = os.path.abspath(self.notification_icon_path)
+                    winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, icon_path)
+                    self.text_edit.add_log(f"✓ レジストリにアイコンパスを登録: {icon_path}")
+                
+                # 通知設定
+                winreg.SetValueEx(key, "ShowInSettings", 0, winreg.REG_DWORD, 1)
+                
+            self.text_edit.add_log("✓ Windowsレジストリにアプリケーション情報を登録しました")
+            
+        except Exception as e:
+            self.text_edit.add_log(f"📝 Windowsレジストリ登録をスキップ: {e}")
+    
+    def try_register_app_icon(self):
+        """Windowsにアプリケーションアイコンを登録"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            # ウィンドウハンドルを取得
+            hwnd = int(self.winId())
+            
+            # アイコンを読み込み
+            if self.notification_icon_path and os.path.exists(self.notification_icon_path):
+                # LoadImageを使用してアイコンを読み込み
+                user32 = ctypes.windll.user32
+                IMAGE_ICON = 1
+                LR_LOADFROMFILE = 0x00000010
+                LR_DEFAULTSIZE = 0x00000040
+                
+                hicon = user32.LoadImageW(
+                    None,
+                    self.notification_icon_path,
+                    IMAGE_ICON,
+                    0, 0,
+                    LR_LOADFROMFILE | LR_DEFAULTSIZE
+                )
+                
+                if hicon:
+                    # ウィンドウアイコンを設定（大・小両方）
+                    WM_SETICON = 0x0080
+                    ICON_SMALL = 0
+                    ICON_BIG = 1
+                    
+                    user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
+                    user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+                    
+                    self.text_edit.add_log("✓ Windowsにアプリケーションアイコンを登録しました")
+                else:
+                    self.text_edit.add_log("⚠ アイコンファイルの読み込みに失敗")
+            
+        except Exception as e:
+            self.text_edit.add_log(f"📝 Windowsアイコン登録をスキップ: {e}")
+    
+    def show_system_notification(self, title, message, duration=5000):
+        """Windowsシステム通知を表示"""
+        try:
+            self.text_edit.add_log(f"🔍 通知表示を試行中: {title}")
+            
+            # システムトレイの状態をチェック
+            if not self.tray_icon:
+                self.text_edit.add_log("⚠ システムトレイアイコンが初期化されていません")
+                return False
+                
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                self.text_edit.add_log("⚠ システムトレイが利用できません")
+                return False
+            
+            if not self.tray_icon.isVisible():
+                self.text_edit.add_log("⚠ システムトレイアイコンが非表示です - 再表示を試行")
+                self.tray_icon.show()
+            
+            # 通知がサポートされているかチェック
+            if not self.tray_icon.supportsMessages():
+                self.text_edit.add_log("⚠ システムトレイが通知メッセージをサポートしていません")
+                return False
+            
+            # システムトレイ経由で通知表示
+            self.text_edit.add_log(f"� 通知を送信中: タイトル='{title}', メッセージ='{message[:50]}...', 時間={duration}ms")
+            
+            self.tray_icon.showMessage(
+                title,
+                message,
+                QSystemTrayIcon.NoIcon,
+                duration
+            )
+            
+            self.text_edit.add_log(f"✅ システム通知を送信しました: {title}")
+            self.text_edit.add_log("📍 Windowsの右下（通知エリア）を確認してください")
+            return True
+                
+        except Exception as e:
+            self.text_edit.add_log(f"❌ システム通知の表示に失敗: {e}")
+            import traceback
+            self.text_edit.add_log(f"詳細エラー: {traceback.format_exc()}")
+            return False
+    
+
+    
+
+    
+
+    
+    def show_windows_balloon_notification(self, title, message, custom_icon_path=None):
+        """Windowsバルーン通知を使用した確実な通知（システムトレイ経由）"""
+        try:
+            if not self.tray_icon or not self.tray_icon.isVisible():
+                self.text_edit.add_log("⚠ システムトレイアイコンが利用できません")
+                return False
+            
+            self.text_edit.add_log("🎈 Windowsバルーン通知を表示します")
+            
+            # カスタムアイコンパスが指定されている場合はそれを使用
+            if custom_icon_path and os.path.exists(custom_icon_path):
+                try:
+                    icon = QIcon(custom_icon_path)
+                    self.tray_icon.showMessage(title, message, icon, 10000)
+                    self.text_edit.add_log(f"ランダムアイコンで通知表示: {os.path.basename(custom_icon_path)}")
+                except Exception as e:
+                    self.text_edit.add_log(f"カスタムアイコン読み込みエラー: {e}")
+                    self.tray_icon.showMessage(title, message, QSystemTrayIcon.Information, 10000)
+            # 既存のnotification_icon_pathがあれば使用
+            elif hasattr(self, 'notification_icon_path') and self.notification_icon_path and os.path.exists(self.notification_icon_path):
+                icon = QIcon(self.notification_icon_path)
+                self.tray_icon.showMessage(title, message, icon, 10000)
+            else:
+                self.tray_icon.showMessage(title, message, QSystemTrayIcon.Information, 10000)
+            
+            self.text_edit.add_log("✅ バルーン通知を送信しました")
+            return True
+            
+        except Exception as e:
+            self.text_edit.add_log(f"❌ バルーン通知エラー: {e}")
+            # フォールバック: アイコンパラメータを省略
+            try:
+                self.tray_icon.showMessage(title, message)
+                return True
+            except:
+                return False
+    
+    def show_conversion_completion_notification(self, output_path, clipboard_copied, custom_icon_path=None):
+        """変換完了時のシステム通知を表示（画像付き）"""
+        try:
+            file_name = os.path.basename(output_path)
+            
+            # ファイルサイズを取得
+            try:
+                file_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
+                size_text = f"{file_size:.1f} MB"
+            except:
+                size_text = ""
+            
+            # 通知のタイトルとメッセージを作成
+            title = f"🎬 変換完了 【{size_text}】"
+            
+            if clipboard_copied:
+                message = f"📋️ 動画をクリップボードにコピーしました\n🗂️ 動画を {os.path.dirname(output_path)} に保存しました"
+            else:
+                message = f"🗂️ 動画を {os.path.dirname(output_path)} に保存しました"
+            
+            # 複数の通知システムを順番に試行（確実性を優先）
+            success = False
+            
+            # 1. Windowsバルーン通知（最も確実、カスタムアイコン付き）
+            if not success:
+                success = self.show_windows_balloon_notification(title, message, custom_icon_path)
+                if success:
+                    self.text_edit.add_log("✅ バルーン変換完了通知を表示しました")
+            
+            # 2. PyQt5システムトレイ通知
+            if not success:
+                self.text_edit.add_log("🔄 PyQt5システムトレイ通知を表示します")
+                success = self.show_system_notification(title, message, duration=10000)
+                if success:
+                    self.text_edit.add_log("✅ PyQt5変換完了通知を表示しました")
+            
+            # さらに失敗した場合はシンプルな通知
+            if not success:
+                self.text_edit.add_log("🔄 アイコン付き通知も失敗、シンプル通知を試行します")
+                if self.tray_icon:
+                    try:
+                        self.tray_icon.showMessage(title, message, QSystemTrayIcon.NoIcon, 10000)
+                        success = True
+                        self.text_edit.add_log("✅ シンプル通知を表示しました")
+                    except Exception as e:
+                        self.text_edit.add_log(f"❌ シンプル通知も失敗: {e}")
+            
+            if success:
+                self.text_edit.add_log(f"📢 変換完了通知を表示しました: {file_name}")
+            else:
+                self.text_edit.add_log("⚠ 変換完了通知の表示に失敗しました")
+                
+        except Exception as e:
+            self.text_edit.add_log(f"⚠ 変換完了通知の生成に失敗: {e}")
     
     def change_theme(self, theme_type):
         """テーマを変更"""
@@ -2771,6 +3998,9 @@ class MainWindow(QMainWindow):
         
         # 設定を保存
         self.save_theme_setting()
+        
+        # チェックマーク表示を更新
+        self.update_menu_checkmarks()
         
         # アプリケーション全体を再描画
         self.update()
@@ -2794,6 +4024,9 @@ class MainWindow(QMainWindow):
         # タイトルバーのテーマも適用
         self.apply_titlebar_theme()
         
+        # H.265警告バーの色をテーマに合わせて更新
+        self.update_h265_warning_bar()
+        
         # 現在の状態に応じた背景色を復元
         if hasattr(self, 'current_status') and self.current_status != 'default':
             ThemeManager.apply_status_background(self.text_edit, self.current_theme, self.current_status)
@@ -2816,6 +4049,378 @@ class MainWindow(QMainWindow):
                 print("タイトルバーテーマの設定に失敗しました（この環境では対応していない可能性があります）")
         except Exception as e:
             print(f"タイトルバーテーマ設定中にエラー: {e}")
+
+    # === アップデート確認関連メソッド ===
+    
+    def start_update_check(self):
+        """アップデート確認を開始"""
+        try:
+            self.text_edit.add_log("アップデート確認を開始...")
+            self.update_checker = UpdateChecker(APP_VERSION)
+            self.update_checker.update_available_signal.connect(self.on_update_available)
+            self.update_checker.update_check_failed_signal.connect(self.on_update_check_failed)
+            self.update_checker.unreleased_version_signal.connect(self.on_unreleased_version)
+            self.update_checker.start()
+        except Exception as e:
+            self.text_edit.add_log(f"アップデート確認開始エラー: {e}")
+    
+    def on_update_available(self, latest_version):
+        """アップデートが利用可能な場合の処理"""
+        self.update_available = True
+        self.latest_version = latest_version
+        self.update_menu_action.setVisible(True)
+        self.text_edit.add_log(f"🔔 新しいバージョン {latest_version} が利用可能です！")
+        
+        # システムトレイ通知（利用可能な場合）
+        if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
+            self.tray_icon.showMessage(
+                "ClipItBro - アップデート通知",
+                f"新しいバージョン {latest_version} が利用可能です！\nメニューバーの「アップデートがあります！」をクリックしてください。",
+                QSystemTrayIcon.Information,
+                5000
+            )
+    
+    def on_update_check_failed(self, error_message):
+        """アップデート確認失敗時の処理"""
+        self.text_edit.add_log(f"アップデート確認失敗: {error_message}")
+    
+    def on_unreleased_version(self, released_version):
+        """未公開バージョンの場合の処理"""
+        self.is_unreleased_version = True
+        self.released_version = released_version
+        self.update_menu_action.setText('📋 未公開バージョン')
+        self.update_menu_action.setVisible(True)
+        self.text_edit.add_log(f"📋 未公開バージョンを使用中 (リリース版: {released_version})")
+        
+        # システムトレイ通知（利用可能な場合）
+        if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
+            self.tray_icon.showMessage(
+                "ClipItBro - バージョン情報",
+                f"未公開バージョンを使用中です！\n現在: {APP_VERSION}\nリリース版: {released_version}",
+                QSystemTrayIcon.Information,
+                5000
+            )
+    
+    def show_update_dialog(self):
+        """アップデート通知ダイアログを表示"""
+        msg_box = QMessageBox(self)
+        
+        if self.is_unreleased_version:
+            # 未公開バージョンの場合
+            msg_box.setWindowTitle("バージョン情報")
+            msg_box.setIcon(QMessageBox.Information)
+            msg_box.setText("未公開バージョンを使用中です！")
+            msg_box.setInformativeText(
+                f"現在のバージョン: {APP_VERSION} (未公開)\n"
+                f"最新リリース版: {self.released_version}\n\n"
+                f"開発版やベータ版をお使いいただき、ありがとうございます！\n"
+                f"問題がございましたら、GitHubでご報告ください。"
+            )
+            
+            # ボタンをカスタマイズ
+            github_button = msg_box.addButton("GitHubで報告", QMessageBox.AcceptRole)
+            close_button = msg_box.addButton("閉じる", QMessageBox.RejectRole)
+            
+        elif self.update_available and self.latest_version:
+            # アップデートが利用可能な場合
+            msg_box.setWindowTitle("アップデート通知")
+            msg_box.setIcon(QMessageBox.Information)
+            msg_box.setText("新しいバージョンが利用可能です！")
+            msg_box.setInformativeText(
+                f"現在のバージョン: {APP_VERSION}\n"
+                f"最新バージョン: {self.latest_version}\n\n"
+                f"自動アップデートを実行しますか？"
+            )
+            
+            # ボタンをカスタマイズ
+            auto_update_button = msg_box.addButton("自動アップデート", QMessageBox.AcceptRole)
+            github_button = msg_box.addButton("GitHubで確認", QMessageBox.ActionRole)
+            close_button = msg_box.addButton("後で", QMessageBox.RejectRole)
+        else:
+            # エラーの場合
+            return
+        
+        # 個別ボタンにテーマを適用（変換完了ウィンドウと同じ方式）
+        if self.is_unreleased_version:
+            ThemeManager.apply_theme_to_widget(github_button, self.current_theme)
+            ThemeManager.apply_theme_to_widget(close_button, self.current_theme)
+        elif self.update_available and self.latest_version:
+            ThemeManager.apply_theme_to_widget(auto_update_button, self.current_theme)
+            ThemeManager.apply_theme_to_widget(github_button, self.current_theme)
+            ThemeManager.apply_theme_to_widget(close_button, self.current_theme)
+        
+        # テーマを適用
+        msg_box_style = f"""
+        QMessageBox {{
+            background-color: {self.current_theme['main_bg']};
+            color: {self.current_theme['text_color']};
+        }}
+        QMessageBox QLabel {{
+            color: {self.current_theme['text_color']};
+            background-color: transparent;
+        }}
+        QMessageBox QPushButton {{
+            background-color: {self.current_theme['button_bg']} !important;
+            color: {self.current_theme['button_text']} !important;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            min-width: auto;
+        }}
+        QMessageBox QPushButton:hover {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        QMessageBox QPushButton:pressed {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        """
+        msg_box.setStyleSheet(msg_box_style)
+        
+        msg_box.exec_()
+        
+        clicked_button = msg_box.clickedButton()
+        
+        if clicked_button == github_button:
+            # GitHubページを開く
+            try:
+                if self.is_unreleased_version:
+                    webbrowser.open("https://github.com/EpicJunriel/KIK-ClipItBro/issues")
+                    self.text_edit.add_log("GitHubイシューページを開きました")
+                else:
+                    webbrowser.open("https://github.com/EpicJunriel/KIK-ClipItBro/releases")
+                    self.text_edit.add_log("GitHubリリースページを開きました")
+            except Exception as e:
+                self.text_edit.add_log(f"ブラウザ起動エラー: {e}")
+        elif 'auto_update_button' in locals() and clicked_button == auto_update_button:
+            # 自動アップデートを実行
+            self.start_auto_update()
+    
+    def start_auto_update(self):
+        """自動アップデートを開始"""
+        if not self.latest_version:
+            self.text_edit.add_log("エラー: 最新バージョン情報が取得できていません")
+            return
+        
+        try:
+            self.text_edit.add_log(f"🚀 自動アップデートを開始します...")
+            self.text_edit.add_log(f"対象バージョン: {self.latest_version}")
+            
+            # 一時保存先
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstaller環境：実行ファイルと同じディレクトリ
+                temp_dir = os.path.join(os.path.dirname(sys.executable), "temp_update")
+            else:
+                # 開発環境：スクリプトと同じディレクトリ
+                temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_update")
+            
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_file_path = os.path.join(temp_dir, f"ClipItBro_{self.latest_version}.exe")
+            
+            # ダウンローダーを初期化（バージョンと保存先を指定）
+            self.update_downloader = UpdateDownloader(self.latest_version, temp_file_path)
+            self.update_downloader.download_progress_signal.connect(self.on_download_progress)
+            self.update_downloader.download_finished_signal.connect(self.on_download_finished)
+            self.update_downloader.download_error_signal.connect(self.on_download_error)
+            
+            # ダウンロード開始
+            self.update_downloader.start()
+            
+            # プログレスバーを表示
+            self.show_download_progress_dialog()
+            
+        except Exception as e:
+            self.text_edit.add_log(f"自動アップデート開始エラー: {e}")
+    
+    def show_download_progress_dialog(self):
+        """ダウンロード進捗ダイアログを表示"""
+        self.download_dialog = QDialog(self)
+        self.download_dialog.setWindowTitle("アップデートダウンロード中")
+        self.download_dialog.setModal(True)
+        self.download_dialog.setFixedSize(400, 150)
+        
+        layout = QVBoxLayout()
+        
+        # メッセージラベル
+        self.download_label = QLabel(f"バージョン {self.latest_version} をダウンロード中...")
+        layout.addWidget(self.download_label)
+        
+        # プログレスバー
+        self.download_progress = QProgressBar()
+        self.download_progress.setRange(0, 100)
+        self.download_progress.setValue(0)
+        layout.addWidget(self.download_progress)
+        
+        # キャンセルボタン
+        cancel_button = QPushButton("キャンセル")
+        cancel_button.clicked.connect(self.cancel_download)
+        layout.addWidget(cancel_button)
+        
+        self.download_dialog.setLayout(layout)
+        
+        # 個別ボタンにテーマを適用（変換完了ウィンドウと同じ方式）
+        ThemeManager.apply_theme_to_widget(cancel_button, self.current_theme)
+        
+        # テーマ適用
+        ThemeManager.apply_theme_to_widget(self.download_dialog, self.current_theme)
+        
+        self.download_dialog.show()
+    
+    def on_download_progress(self, progress):
+        """ダウンロード進捗更新"""
+        if hasattr(self, 'download_progress'):
+            self.download_progress.setValue(progress)
+            self.download_label.setText(f"バージョン {self.latest_version} をダウンロード中... ({progress}%)")
+    
+    def on_download_finished(self, file_path):
+        """ダウンロード完了時の処理"""
+        self.text_edit.add_log(f"✓ ダウンロード完了: {file_path}")
+        
+        # ダウンロードダイアログを閉じる
+        if hasattr(self, 'download_dialog'):
+            self.download_dialog.close()
+        
+        # 即座にアップデートを実行
+        self.execute_update(file_path)
+    
+    def on_download_error(self, error_message):
+        """ダウンロードエラー時の処理"""
+        self.text_edit.add_log(f"✗ ダウンロードエラー: {error_message}")
+        
+        # ダウンロードダイアログを閉じる
+        if hasattr(self, 'download_dialog'):
+            self.download_dialog.close()
+        
+        # エラーダイアログ表示
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("ダウンロードエラー")
+        msg_box.setText("アップデートファイルのダウンロードに失敗しました")
+        msg_box.setInformativeText(f"エラー詳細: {error_message}")
+        
+        # テーマを適用
+        msg_box_style = f"""
+        QMessageBox {{
+            background-color: {self.current_theme['main_bg']};
+            color: {self.current_theme['text_color']};
+        }}
+        QMessageBox QLabel {{
+            color: {self.current_theme['text_color']};
+            background-color: transparent;
+        }}
+        QMessageBox QPushButton {{
+            background-color: {self.current_theme['button_bg']} !important;
+            color: {self.current_theme['button_text']} !important;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            min-width: auto;
+        }}
+        QMessageBox QPushButton:hover {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        QMessageBox QPushButton:pressed {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        """
+        msg_box.setStyleSheet(msg_box_style)
+        msg_box.exec_()
+    
+    def cancel_download(self):
+        """ダウンロードをキャンセル"""
+        if hasattr(self, 'update_downloader'):
+            self.update_downloader.cancel_download()
+        
+        if hasattr(self, 'download_dialog'):
+            self.download_dialog.close()
+        
+        self.text_edit.add_log("ダウンロードをキャンセルしました")
+    
+    def confirm_and_execute_update(self, new_exe_path):
+        """アップデート実行の最終確認"""
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setWindowTitle("アップデート実行確認")
+        msg_box.setText("アップデートを実行しますか？")
+        msg_box.setInformativeText(
+            f"新しいバージョン ({self.latest_version}) のダウンロードが完了しました。\n\n"
+            f"アップデートを実行すると、アプリケーションが終了されます。\n"
+            f"現在の作業内容は保存されません。"
+        )
+        
+        execute_button = msg_box.addButton("実行", QMessageBox.AcceptRole)
+        cancel_button = msg_box.addButton("後で", QMessageBox.RejectRole)
+        
+        # 個別ボタンにテーマを適用（変換完了ウィンドウと同じ方式）
+        ThemeManager.apply_theme_to_widget(execute_button, self.current_theme)
+        ThemeManager.apply_theme_to_widget(cancel_button, self.current_theme)
+        
+        # テーマを適用
+        msg_box_style = f"""
+        QMessageBox {{
+            background-color: {self.current_theme['main_bg']};
+            color: {self.current_theme['text_color']};
+        }}
+        QMessageBox QLabel {{
+            color: {self.current_theme['text_color']};
+            background-color: transparent;
+        }}
+        QMessageBox QPushButton {{
+            background-color: {self.current_theme['button_bg']} !important;
+            color: {self.current_theme['button_text']} !important;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            min-width: auto;
+        }}
+        QMessageBox QPushButton:hover {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        QMessageBox QPushButton:pressed {{
+            background-color: {self.current_theme['button_hover']} !important;
+        }}
+        """
+        msg_box.setStyleSheet(msg_box_style)
+        msg_box.exec_()
+        
+        if msg_box.clickedButton() == execute_button:
+            self.execute_update(new_exe_path)
+        else:
+            self.text_edit.add_log("アップデートを後回しにしました")
+            self.text_edit.add_log(f"ダウンロード済みファイル: {new_exe_path}")
+    
+    def execute_update(self, new_exe_path):
+        """アップデートを実行"""
+        try:
+            self.text_edit.add_log("🔄 アップデートを実行中...")
+            self.text_edit.add_log(f"新しいexe: {new_exe_path}")
+            
+            # updater.batの利用可能性をチェック
+            if not UpdateManager.check_updater_availability():
+                self.text_edit.add_log("✗ updater.batが見つかりません")
+                # フォールバック：レガシーな方法を使用
+                current_exe_path = sys.executable
+                if UpdateManager.execute_update(current_exe_path, new_exe_path, restart=True):
+                    self.text_edit.add_log("✓ レガシーアップデート方式を使用しました")
+                    QTimer.singleShot(1000, QApplication.quit)
+                else:
+                    self.text_edit.add_log("✗ アップデート実行に失敗しました")
+                return
+            
+            # updater.batを使用してアップデート実行
+            if UpdateManager.execute_update_with_batch(new_exe_path):
+                self.text_edit.add_log("✓ updater.batを実行しました")
+                self.text_edit.add_log("アプリケーションを終了します...")
+                
+                # アプリケーションを終了
+                QTimer.singleShot(1000, QApplication.quit)
+            else:
+                self.text_edit.add_log("✗ updater.bat実行に失敗しました")
+                
+        except Exception as e:
+            self.text_edit.add_log(f"アップデート実行エラー: {e}")
 
 # 非同期変換処理用のスレッドクラス
 class ConversionThread(QThread):
@@ -2900,11 +4505,12 @@ class FirstPassThread(QThread):
     progress_signal = pyqtSignal(float)  # 進行状況シグナルを追加
     finished_signal = pyqtSignal(bool, str, str)  # success, log_file_path, error_message
     
-    def __init__(self, video_file_path, temp_bitrate, total_duration=0):
+    def __init__(self, video_file_path, temp_bitrate, total_duration=0, use_h265=False):
         super().__init__()
         self.video_file_path = video_file_path
         self.temp_bitrate = temp_bitrate
         self.total_duration = total_duration  # 動画の総時間を追加
+        self.use_h265 = use_h265
         self.process = None  # プロセス参照を保持
         self._should_stop = False  # 停止フラグ
     
@@ -2919,15 +4525,18 @@ class FirstPassThread(QThread):
     
     def run(self):
         try:
-            ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
+            ffmpeg_path = get_ffmpeg_executable_path('ffmpeg.exe')
             
             # 1pass目用のログファイル名を生成
             # 1pass目のコマンド構築
+            # コーデック選択
+            codec = 'libx265' if self.use_h265 else 'libx264'
+            
             cmd = [
                 ffmpeg_path,
                 '-y',  # ファイル上書き許可
                 '-i', self.video_file_path,
-                '-c:v', 'libx264',
+                '-c:v', codec,
                 '-b:v', f'{self.temp_bitrate}k',
                 '-pass', '1',
                 '-f', 'null'
@@ -3027,13 +4636,14 @@ class TwoPassConversionThread(QThread):
     phase_signal = pyqtSignal(int)  # 1=1pass目, 2=2pass目
     finished_signal = pyqtSignal(bool, str, str)  # success, output_path, error_message
     
-    def __init__(self, video_file_path, output_path, target_bitrate, total_duration, second_pass_only=False):
+    def __init__(self, video_file_path, output_path, target_bitrate, total_duration, second_pass_only=False, use_h265=False):
         super().__init__()
         self.video_file_path = video_file_path
         self.output_path = output_path
         self.target_bitrate = target_bitrate
         self.total_duration = total_duration
         self.second_pass_only = second_pass_only
+        self.use_h265 = use_h265
         
         # 環境変数設定
         self.env = os.environ.copy()
@@ -3043,18 +4653,23 @@ class TwoPassConversionThread(QThread):
     
     def run(self):
         try:
-            ffmpeg_path = os.path.normpath('bin/ffmpeg.exe')
+            ffmpeg_path = get_ffmpeg_executable_path('ffmpeg.exe')
             
             if not self.second_pass_only:
                 # === 1pass目実行 ===
                 self.phase_signal.emit(1)
                 self.log_signal.emit("=== 1pass目開始 ===")
                 
+                # コーデック選択
+                video_codec = 'libx265' if self.use_h265 else 'libx264'
+                codec_name = 'H.265 (HEVC)' if self.use_h265 else 'H.264 (x264)'
+                self.log_signal.emit(f"📹 使用コーデック: {codec_name}")
+                
                 cmd1 = [
                     ffmpeg_path,
                     '-y',
                     '-i', self.video_file_path,
-                    '-c:v', 'libx264',
+                    '-c:v', video_codec,
                     '-b:v', f'{self.target_bitrate}k',
                     '-pass', '1',
                     '-f', 'null'
@@ -3073,11 +4688,14 @@ class TwoPassConversionThread(QThread):
             self.phase_signal.emit(2)
             self.log_signal.emit("=== 2pass目開始 ===")
             
+            # コーデック選択（2pass目でも同じコーデックを使用）
+            video_codec = 'libx265' if self.use_h265 else 'libx264'
+            
             cmd2 = [
                 ffmpeg_path,
                 '-y',
                 '-i', self.video_file_path,
-                '-c:v', 'libx264',
+                '-c:v', video_codec,
                 '-b:v', f'{self.target_bitrate}k',
                 '-pass', '2',
                 '-c:a', 'aac',
@@ -3170,11 +4788,14 @@ class TwoPassConversionThread(QThread):
 
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(None)  # 親をNoneに設定してタイトル自動追加を防ぐ
         self.parent_window = parent
-        self.setWindowTitle("About ClipItBro")
+        self.setWindowTitle("ClipItBro について")
         self.setFixedSize(700, 400)  # ダイアログサイズをさらに拡大
         self.setWindowIcon(self.get_app_icon())
+        
+        # ウィンドウフラグを設定してクエスチョンマークボタンを削除し、独立したダイアログとして表示
+        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint)
         
         # メインレイアウト（水平分割）
         main_layout = QHBoxLayout()
@@ -3257,17 +4878,17 @@ class AboutDialog(QDialog):
         title_layout.setAlignment(Qt.AlignLeft | Qt.AlignBaseline)  # ベースライン揃え
         
         # アプリケーション名
-        app_name = QLabel("ClipItBro")
+        app_name = QLabel(APP_NAME)
         app_name.setFont(QFont("Arial", 22, QFont.Bold))
         app_name.setObjectName("app_name")
         
         # バージョン情報
-        version_label = QLabel("1.0")
+        version_label = QLabel(APP_VERSION)
         version_label.setFont(QFont("Arial", 11))
         version_label.setObjectName("version_label")
         
         # サブタイトル（同じ行に追加）
-        subtitle_label = QLabel("powered by 菊池組")
+        subtitle_label = QLabel(f"powered by {APP_DEVELOPER}")
         subtitle_label.setFont(QFont("Arial", 13, QFont.Bold))
         subtitle_label.setObjectName("subtitle_label")
         
@@ -3281,14 +4902,14 @@ class AboutDialog(QDialog):
         text_layout.setSpacing(2)  # 要素間の間隔を詰める
         
         # 制作者情報
-        creator_label = QLabel("菊池組(KIKUCHIGUMI)は、2020年から本格的な活動を開始した、異能マルチクリエイター集団。アニメ・ゲームカルチャーから影響を受けた独自のクリエイティビティで、多方面での活動を展開している。2025年には新たに三角さこんを迎え、VALORANTシーンにも活動の幅を広めている。")
+        creator_label = QLabel(f"{APP_DEVELOPER}(KIKUCHIGUMI)は、2020年から本格的な活動を開始した、異能マルチクリエイター集団。アニメ・ゲームカルチャーから影響を受けた独自のクリエイティビティで、多方面での活動を展開している。2025年には新たに三角さこんを迎え、VALORANTシーンにも活動の幅を広めている。")
         creator_label.setFont(QFont("Arial", 11))
         creator_label.setObjectName("creator_label")
         creator_label.setWordWrap(True)
         creator_label.setAlignment(Qt.AlignLeft)
 
         # コピーライト
-        copyright_label = QLabel("Built with FFmpeg - https://ffmpeg.org\nFFmpeg is licensed under the LGPL/GPL.\n\n© 2025 菊池組. All rights reserved.")
+        copyright_label = QLabel(f"Built with FFmpeg - https://ffmpeg.org\nFFmpeg is licensed under the LGPL/GPL.\n\n© {APP_COPYRIGHT} {APP_DEVELOPER}. All rights reserved.")
         copyright_label.setFont(QFont("Arial", 9))
         copyright_label.setObjectName("copyright_label")
         copyright_label.setAlignment(Qt.AlignLeft)
@@ -3298,11 +4919,49 @@ class AboutDialog(QDialog):
         # 下部スペーサー
         text_layout.addStretch()
         
+        # ボタンエリア（水平レイアウト）
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+        
+        # GitHubアイコン（クリック可能なラベル）
+        self.github_icon = QLabel()
+        self.github_icon.setObjectName("github_icon")
+        self.github_icon.setToolTip("GitHubリポジトリを開く")
+        self.github_icon.setCursor(Qt.PointingHandCursor)
+        self.github_icon.setAlignment(Qt.AlignCenter)
+        
+        # GitHubアイコン画像を設定（初期設定）
+        self.update_github_icon()
+        
+        # イベントハンドラを設定
+        self.github_icon.mousePressEvent = lambda event: self.open_github() if event.button() == Qt.LeftButton else None
+        
+        # ホバー効果のためのイベントハンドラ
+        def on_enter(event):
+            if self.parent_window and hasattr(self.parent_window, 'current_theme'):
+                theme = self.parent_window.current_theme
+                hover_style = f"background-color: {theme['slider_bg']}; border: 2px solid {theme['border_color']}; border-radius: 6px; padding: 4px;"
+                self.github_icon.setStyleSheet(hover_style)
+        
+        def on_leave(event):
+            self.github_icon.setStyleSheet("background-color: transparent; border: 2px solid transparent; border-radius: 6px; padding: 4px;")
+        
+        self.github_icon.enterEvent = on_enter
+        self.github_icon.leaveEvent = on_leave
+        
+        button_layout.addWidget(self.github_icon)
+        
+        # スペーサー
+        button_layout.addStretch()
+        
         # 閉じるボタン
         close_button = QPushButton("閉じる")
         close_button.setObjectName("close_button")
         close_button.clicked.connect(self.accept)
-        text_layout.addWidget(close_button, 0, Qt.AlignRight)
+        button_layout.addWidget(close_button)
+        
+        # ボタンレイアウトをメインレイアウトに追加
+        text_layout.addLayout(button_layout)
         
         # メインレイアウトに追加（比率調整）
         main_layout.addWidget(logo_widget, 2)  # 左側の比重を増加
@@ -3377,8 +5036,88 @@ class AboutDialog(QDialog):
             QPushButton#close_button:pressed {{
                 background-color: {theme['border_color']};
             }}
+            QLabel#github_icon {{
+                background-color: transparent;
+                border: 2px solid transparent;
+                border-radius: 6px;
+                padding: 4px;
+            }}
+            QLabel#github_icon:hover {{
+                background-color: {theme['slider_bg']};
+                border: 2px solid {theme['border_color']};
+            }}
         """
         self.setStyleSheet(dialog_style)
+        
+        # Windowsタイトルバーテーマを設定
+        if self.parent_window and hasattr(self.parent_window, 'current_theme'):
+            is_dark_mode = self.parent_window.current_theme['name'] == 'Dark'
+            set_titlebar_theme(int(self.winId()), is_dark_mode)
+        
+        # GitHubアイコンもテーマに応じて更新
+        self.update_github_icon()
+    
+    def update_github_icon(self):
+        """GitHubアイコンをテーマに応じて更新"""
+        github_icon_path = self.get_github_icon()
+        if github_icon_path and hasattr(self, 'github_icon'):
+            pixmap = QPixmap(github_icon_path)
+            # アイコンサイズを調整（32x32ピクセル）
+            scaled_pixmap = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.github_icon.setPixmap(scaled_pixmap)
+        elif hasattr(self, 'github_icon'):
+            # フォールバック：テキスト表示
+            self.github_icon.setText("⭐ GitHub")
+            self.github_icon.setStyleSheet("font-size: 14px; padding: 8px;")
+    
+    def open_github(self):
+        """GitHubリポジトリを開く"""
+        import webbrowser
+        github_url = "https://github.com/EpicJunriel/KIK-ClipItBro"  
+        try:
+            webbrowser.open(github_url)
+        except Exception as e:
+            QMessageBox.information(self, "情報", f"ブラウザを開けませんでした。\n手動でアクセスしてください:\n{github_url}")
+    
+    def get_github_icon(self):
+        """GitHubアイコンを取得（テーマ対応・EXE対応）"""
+        def get_resource_path(relative_path):
+            """EXE環境とスクリプト環境の両方でリソースパスを取得"""
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstallerでパッケージ化された環境
+                return os.path.join(sys._MEIPASS, relative_path)
+            else:
+                # 通常のPythonスクリプト環境
+                return relative_path
+        
+        # 現在のテーマを取得
+        is_dark_theme = False
+        if self.parent_window and hasattr(self.parent_window, 'current_theme'):
+            is_dark_theme = self.parent_window.current_theme['name'] == 'Dark'
+        
+        # テーマに応じたGitHubアイコンのパス候補
+        if is_dark_theme:
+            # ダークテーマ: 白いアイコン
+            github_icon_paths = [
+                "icon/github/github-mark-white.png",
+                "icon/github/github-white.png",
+                "icon/github.png",
+                "github-white.png"
+            ]
+        else:
+            # ライトテーマ: 黒いアイコン
+            github_icon_paths = [
+                "icon/github/github-mark.png",
+                "icon/github/github-black.png", 
+                "icon/github/github.png",
+                "github.png"
+            ]
+        
+        for path in github_icon_paths:
+            resource_path = get_resource_path(path)
+            if os.path.exists(resource_path):
+                return resource_path
+        return None
     
     def get_app_icon(self):
         """アプリケーションアイコンを取得（EXE対応）"""
@@ -3423,8 +5162,33 @@ class AboutDialog(QDialog):
                 return resource_path  # ファイルパスを返す（GIFとPNG/JPGの両方に対応）
         return None
 
+    def showEvent(self, event):
+        """ダイアログ表示時にタイトルバーテーマを確実に適用"""
+        super().showEvent(event)
+        # ダイアログが完全に表示された後にタイトルバーテーマを適用
+        if self.parent_window and hasattr(self.parent_window, 'current_theme'):
+            is_dark_mode = self.parent_window.current_theme['name'] == 'Dark'
+            # 少し遅延させて確実に適用
+            QTimer.singleShot(50, lambda: set_titlebar_theme(int(self.winId()), is_dark_mode))
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    
+    # アプリケーション情報を設定（タスクバー統合のため固定値を使用）
+    app.setOrganizationName("KikuchiGumi")
+    app.setApplicationName("ClipItBro")
+    app.setApplicationVersion(APP_VERSION)
+    
+    # Windows固有の設定を最優先で実行
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            # 固定のAppUserModelIDを設定（バージョンに依存しない）
+            # タスクバー固定で使用されるIDと一致させる
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClipItBro.KikuchiGumi.VideoConverter")
+            print("✓ 早期AppUserModelID設定完了")
+        except Exception as e:
+            print(f"Windows固有設定エラー: {e}")
     
     # EXE環境でのリソースパス取得
     def get_resource_path(relative_path):
@@ -3454,15 +5218,6 @@ if __name__ == '__main__':
     
     if not app_icon_set:
         print("カスタムアイコンが見つかりません。デフォルトアイコンを使用します。")
-    
-    # Windows固有の設定
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            # アプリケーションユーザーモデルIDを設定
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClipItBro.菊池組.動画変換.v2.0")
-        except Exception as e:
-            print(f"Windows固有設定エラー: {e}")
     
     window = MainWindow()
     window.show()
