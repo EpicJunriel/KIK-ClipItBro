@@ -72,7 +72,7 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 
 ## 更新履歴
 **緑色=ホットなバージョンだったり、お気に入りだったり**<br />
-**青色=マイナーチェンジだったり？**もはや俺も定かではない。<br />
+**青色=マイナーチェンジだったり？** もはや俺も定かではない。<br />
 ### 🔵 [v1.1.1 (2025.08.29)](https://github.com/EpicJunriel/KIK-ClipItBro/releases/tag/1.1.1)
 
 ### 🟢 [v1.1 (2025.08.28)](https://github.com/EpicJunriel/KIK-ClipItBro/releases/tag/1.1)
