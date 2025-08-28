@@ -80,26 +80,26 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 <img src="resources/v1.1_settings.png" alt="ClipItBro_v1.1_Clipboard" width="400" />
 
 
-- トースト通知<br />
+- **トースト通知**<br />
 変換終了時などに右下に通知を送ります！バックグラウンドで処理させてても気付けるって事なんだわ
 あと**おみくじ**も遊べるらしいが流石に嘘だよな？
 <img src="resources/v1.1_toast.png" alt="ClipItBro_v1.1_Toast" width="400" />
 
-- 自動アップデーター<br />
+- **自動アップデーター**<br />
 今後はソフト内でアップデートすることができます！なにそれ凄すぎん？
 最新版が公開されていたらメニューバー（設定とかヘルプとかあるとこ）に出てくるので押してみてね
 <img src="resources/v1.1_updater.png" alt="ClipItBro_v1.1_Updater" width="400" />
 
-- H.265 (HEVC) エンコーディング<br />
+- **H.265 (HEVC) エンコーディング**<br />
 より効率的な圧縮を実現するH.265 エンコードを使用する設定を追加しました！
 左上の設定から切り替えできます。
 ※iOSはH.265でエンコードされた動画を再生できないため、iPhone等からクリップが正常に再生されない可能性があります。
 
-- バグ・不具合・デザインの修正<br />
+- **バグ・不具合・デザインの修正**<br />
 色々直したってワケ。
 
-- おみくじ<br />
-どこにあるんや？
+- **おみくじ**<br />
+一体どこにあるんや？
 
 ### 🔵 [v1.0 (2025.08.27)](https://github.com/EpicJunriel/KIK-ClipItBro/releases/tag/1.0)
 - 2passエンコーディング
