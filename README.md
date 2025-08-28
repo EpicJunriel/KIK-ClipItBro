@@ -1,4 +1,4 @@
-!["ClipItBro_logo"](resources/kik_clipitbro_logo_horizontal.png)
+!["ClipItBro_overview_image"](resources/ClipItBro_overview.png)
 ClipItBro - powered by 菊池組
 ====================================
 
@@ -76,4 +76,5 @@ ClipItBro本体は **MIT License** の下で提供されています。詳細は
 - 超イケてるAboutページ！
 
 ---
+!["KIK_logo_image"](resources/kik_clipitbro_logo_horizontal.png)
 © 2025 KIKUCHIGUMI. All Rights Reserved.
