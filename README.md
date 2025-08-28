@@ -2,6 +2,7 @@
 <p align="center">
    <img src="resources/ClipItBro_overview.png" alt="ClipItBro_overview_image" width="600" />
 </p>
+
 ClipItBro - powered by 菊池組
 ====================================
 
