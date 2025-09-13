@@ -1,6 +1,6 @@
 
 <p align="center">
-   <img src="resources/V2_overview.png" alt="V2_overview_image" width="732" />
+   <img src="resources/V2_overview_screenshot.png" alt="V2_overview_image" width="732" />
 </p>
 
 ClipItBro - powered by 菊池組
